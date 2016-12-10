@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 )
@@ -32,11 +33,13 @@ const (
 	PUT   = "PUT"
 	GET   = "GET"
 	COUNT = "COUNT"
+	KILL  = "KILL"
 )
 
 type Query struct {
 	key       string
 	value     []byte
+	client    *Client
 	queryType QueryType
 }
 
@@ -108,6 +111,13 @@ func runLoop(kvs *keyValueServer) {
 				kvs.response <- value
 			} else if query.queryType == COUNT {
 				kvs.counts <- len(kvs.clients)
+			} else if query.queryType == KILL {
+				for i, client := range kvs.clients {
+					if client == query.client {
+						kvs.clients = append(kvs.clients[:i], kvs.clients[i+1:]...)
+						break
+					}
+				}
 			}
 		}
 	}
@@ -133,7 +143,14 @@ func readForClient(kvs *keyValueServer, client *Client) {
 
 			fmt.Printf("message: %v\n", message)
 
-			if err != nil {
+			if err == io.EOF {
+				kvs.queries <- &Query{
+					client:    client,
+					queryType: KILL,
+				}
+
+				return
+			} else if err != nil {
 				return
 			} else {
 				tokens := bytes.Split(message, []byte(","))
