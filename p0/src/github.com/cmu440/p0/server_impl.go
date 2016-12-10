@@ -5,7 +5,6 @@ package p0
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -74,7 +73,6 @@ func (kvs *keyValueServer) Start(port int) error {
 }
 
 func (kvs *keyValueServer) Close() {
-	// TODO: implement this!
 }
 
 func (kvs *keyValueServer) Count() int {
@@ -88,7 +86,6 @@ func runLoop(kvs *keyValueServer) {
 	for {
 		select {
 		case message := <-kvs.messages:
-			fmt.Printf("message\n")
 			for _, client := range kvs.clients {
 				if len(client.messages) == MESSAGE_QUEUE_SIZE_THRESHOLD {
 					<-client.messages
@@ -96,14 +93,11 @@ func runLoop(kvs *keyValueServer) {
 				client.messages <- message
 			}
 		case connection := <-kvs.connections:
-			fmt.Printf("connection\n")
 			client := &Client{connection, make(chan []byte, MESSAGE_QUEUE_SIZE_THRESHOLD), make(chan int)}
 			kvs.clients = append(kvs.clients, client)
-			fmt.Printf("connection count: %v\n", len(kvs.clients))
 			go readForClient(kvs, client)
 			go writeForClient(client)
 		case query := <-kvs.queries:
-			fmt.Printf("query\n")
 			if query.queryType == PUT {
 				put(query.key, query.value)
 			} else if query.queryType == GET {
@@ -140,8 +134,6 @@ func readForClient(kvs *keyValueServer, client *Client) {
 			return
 		default:
 			message, err := reader.ReadBytes('\n')
-
-			fmt.Printf("message: %v\n", message)
 
 			if err == io.EOF {
 				kvs.queries <- &Query{
