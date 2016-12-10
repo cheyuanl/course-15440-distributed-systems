@@ -13,10 +13,11 @@ import (
 type keyValueServer struct {
 	listener    net.Listener
 	clients     []*Client
+	messages    chan []byte
 	connections chan net.Conn
 	queries     chan *Query
-	messages    chan []byte
 	counts      chan int
+	response    chan []byte
 }
 
 type Client struct {
@@ -46,10 +47,11 @@ func New() KeyValueServer {
 	return &keyValueServer{
 		nil,
 		nil,
+		make(chan []byte),
 		make(chan net.Conn),
 		make(chan *Query),
-		make(chan []byte),
 		make(chan int),
+		make(chan []byte),
 	}
 }
 
@@ -103,10 +105,7 @@ func runLoop(kvs *keyValueServer) {
 				put(query.key, query.value)
 			} else if query.queryType == GET {
 				value := get(query.key)
-				fmt.Printf("HAHA1\n")
-				// kvs.messages <- append([]byte(query.key+","), value...)
-				kvs.messages <- []byte("haha")
-				fmt.Printf("HAHA2\n")
+				kvs.response <- value
 			} else if query.queryType == COUNT {
 				kvs.counts <- len(kvs.clients)
 			}
@@ -151,6 +150,9 @@ func readForClient(kvs *keyValueServer, client *Client) {
 						key:       key,
 						queryType: GET,
 					}
+
+					response := <-kvs.response
+					kvs.messages <- append(append(tokens[1][:len(tokens[1])-1], ","...), response...)
 				}
 			}
 		}
