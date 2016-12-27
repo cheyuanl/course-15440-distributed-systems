@@ -3,9 +3,17 @@
 package lsp
 
 import "errors"
+import "strconv"
+import "github.com/cmu440/lspnet"
 
 type server struct {
-	// TODO: implement this!
+	addr    *lspnet.UDPAddr
+	clients map[int]*ClientInfo
+}
+
+type ClientInfo struct {
+	connection *lspnet.UDPConn
+	quitSignal chan int
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -15,7 +23,19 @@ type server struct {
 // project 0, etc.) and immediately return. It should return a non-nil error if
 // there was an error resolving or listening on the specified port number.
 func NewServer(port int, params *Params) (Server, error) {
-	return nil, errors.New("not yet implemented")
+	addr, err := lspnet.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return nil, err
+	}
+
+	s := &server{
+		addr,
+		make(map[int]UDPConn),
+	}
+
+	go acceptClients(s)
+
+	return s, nil
 }
 
 func (s *server) Read() (int, []byte, error) {
@@ -34,4 +54,17 @@ func (s *server) CloseConn(connID int) error {
 
 func (s *server) Close() error {
 	return errors.New("not yet implemented")
+}
+
+func acceptClients(s *server) {
+	id := 1
+	for {
+		conn, err := lspnet.ListenUDP("udp", s.addr)
+		if err == nil {
+			// get new client
+			c := &ClientInfo{conn, make(chan int)}
+			s.clients[id] = c
+			id += 1
+		}
+	}
 }
