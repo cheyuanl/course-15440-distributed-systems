@@ -14,9 +14,9 @@ type server struct {
 }
 
 type ClientInfo struct {
-	connection *lspnet.UDPConn
-	buffer     map[int][]byte
-	quitSignal chan int
+	connectionId int
+	connection   *lspnet.UDPConn
+	quitSignal   chan int
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -26,7 +26,7 @@ type ClientInfo struct {
 // project 0, etc.) and immediately return. It should return a non-nil error if
 // there was an error resolving or listening on the specified port number.
 func NewServer(port int, params *Params) (Server, error) {
-	addr, err := lspnet.ResolveUDPAddr("udp", ":"+strconv.Itoa(port))
+	addr, err := lspnet.ResolveUDPAddr("udp", "localhost:"+strconv.Itoa(port))
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +72,14 @@ func acceptClients(srv *server) {
 }
 
 func runEventLoop(srv *server) {
-	clientId := 1
+	connectionId := 1
 
 	for {
 		select {
 		case connection := <-srv.newConnections:
-			client := &ClientInfo{connection, make(map[int][]byte), make(chan int)}
-			srv.clients[clientId] = client
-			clientId += 1
+			client := &ClientInfo{connectionId, connection, make(chan int)}
+			srv.clients[connectionId] = client
+			connectionId += 1
 			go readHandlerForClient(srv, client)
 			go writeHandlerForClient(srv, client)
 		}
@@ -92,9 +92,17 @@ func readHandlerForClient(srv *server, client *ClientInfo) {
 		case <-client.quitSignal:
 			return
 		default:
-			message, err := ReadMessage(client.connection)
+			request, clientAddr, err := ReadMessage(client.connection)
 			if err == nil {
-				fmt.Printf("%v\n", message)
+				switch request.Type {
+				case MsgConnect:
+					fmt.Printf("New Connection!\n")
+					response := NewAck(client.connectionId, 0)
+					err = WriteMessage(client.connection, clientAddr, response)
+					if err != nil {
+						fmt.Printf("Error: %v\n", err)
+					}
+				}
 			}
 		}
 	}

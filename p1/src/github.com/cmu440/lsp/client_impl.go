@@ -4,10 +4,12 @@ package lsp
 
 import "errors"
 import "github.com/cmu440/lspnet"
+import "fmt"
 
 type client struct {
-	serverAddr *lspnet.UDPAddr
-	connection *lspnet.UDPConn
+	connectionId int
+	serverAddr   *lspnet.UDPAddr
+	connection   *lspnet.UDPConn
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -21,20 +23,28 @@ type client struct {
 // hostport is a colon-separated string identifying the server's host address
 // and port number (i.e., "localhost:9999").
 func NewClient(hostport string, params *Params) (Client, error) {
-	addr, err := lspnet.ResolveUDPAddr("udp", hostport)
+	serverAddr, err := lspnet.ResolveUDPAddr("udp", hostport)
 	if err != nil {
 		return nil, err
 	}
 
 	// create connection
-	connection, err := lspnet.DialUDP("udp", nil, addr)
+	connection, err := lspnet.DialUDP("udp", nil, serverAddr)
 	if err != nil {
 		return nil, err
 	}
-	packet := NewConnect()
-	WriteMessage(connection, packet)
+	request := NewConnect()
+	WriteMessage(connection, nil, request)
+	response, _, err := ReadMessage(connection)
+	fmt.Printf("Response: %v\n", response)
+	if err != nil {
+		return nil, err
+	}
+	if response.Type != MsgAck {
+		return nil, err
+	}
 
-	c := &client{addr, connection}
+	c := &client{response.ConnID, serverAddr, connection}
 
 	return c, nil
 }
