@@ -7,9 +7,10 @@ import "github.com/cmu440/lspnet"
 import "fmt"
 
 type client struct {
-	connectionId int
-	serverAddr   *lspnet.UDPAddr
-	connection   *lspnet.UDPConn
+	connectionId       int
+	connection         *lspnet.UDPConn
+	nextSequenceNumber int
+	dataBuffer         chan []byte
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -36,7 +37,6 @@ func NewClient(hostport string, params *Params) (Client, error) {
 	request := NewConnect()
 	WriteMessage(connection, nil, request)
 	response, _, err := ReadMessage(connection)
-	fmt.Printf("Response: %v\n", response)
 	if err != nil {
 		return nil, err
 	}
@@ -44,25 +44,51 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		return nil, err
 	}
 
-	c := &client{response.ConnID, serverAddr, connection}
+	c := &client{response.ConnID, connection, 1, make(chan []byte)}
+
+	go readHandler(c)
 
 	return c, nil
 }
 
 func (c *client) ConnID() int {
-	return -1
+	return c.connectionId
 }
 
 func (c *client) Read() ([]byte, error) {
-	// TODO: remove this line when you are ready to begin implementing this method.
-	select {} // Blocks indefinitely.
-	return nil, errors.New("not yet implemented")
+	data := <-c.dataBuffer
+	return data, nil
 }
 
 func (c *client) Write(payload []byte) error {
-	return errors.New("not yet implemented")
+	message := NewData(c.connectionId, c.nextSequenceNumber, len(payload), payload)
+	go WriteMessage(c.connection, nil, message)
+	c.nextSequenceNumber += 1
+
+	return nil
 }
 
 func (c *client) Close() error {
 	return errors.New("not yet implemented")
+}
+
+func readHandler(c *client) {
+	for {
+		request, _, err := ReadMessage(c.connection)
+		if err != nil {
+			fmt.Printf("Client Error: %v\n", err)
+		}
+
+		fmt.Printf("Request: %v\n", request)
+		switch request.Type {
+		case MsgData:
+			fmt.Printf("New Data From Server!\n")
+			c.dataBuffer <- request.Payload
+			response := NewAck(c.connectionId, request.SeqNum)
+			err = WriteMessage(c.connection, nil, response)
+			if err != nil {
+				fmt.Printf("Client Error: %v\n", err)
+			}
+		}
+	}
 }

@@ -11,12 +11,19 @@ type server struct {
 	addr           *lspnet.UDPAddr
 	clients        map[int]*ClientInfo
 	newConnections chan *lspnet.UDPConn
+	dataBuffer     chan *DataBufferElement
 }
 
 type ClientInfo struct {
+	connectionId       int
+	connection         *lspnet.UDPConn
+	addr               *lspnet.UDPAddr
+	nextSequenceNumber int
+}
+
+type DataBufferElement struct {
 	connectionId int
-	connection   *lspnet.UDPConn
-	quitSignal   chan int
+	data         []byte
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -35,6 +42,7 @@ func NewServer(port int, params *Params) (Server, error) {
 		addr,
 		make(map[int]*ClientInfo),
 		make(chan *lspnet.UDPConn),
+		make(chan *DataBufferElement),
 	}
 
 	go acceptClients(srv)
@@ -44,13 +52,17 @@ func NewServer(port int, params *Params) (Server, error) {
 }
 
 func (srv *server) Read() (int, []byte, error) {
-	// TODO: remove this line when you are ready to begin implementing this method.
-	select {} // Blocks indefinitely.
-	return -1, nil, errors.New("not yet implemented")
+	element := <-srv.dataBuffer
+	return element.connectionId, element.data, nil
 }
 
 func (srv *server) Write(connID int, payload []byte) error {
-	return errors.New("not yet implemented")
+	client := srv.clients[connID]
+	message := NewData(connID, client.nextSequenceNumber, len(payload), payload)
+	go WriteMessage(client.connection, client.addr, message)
+	client.nextSequenceNumber += 1
+
+	return nil
 }
 
 func (srv *server) CloseConn(connID int) error {
@@ -77,11 +89,10 @@ func runEventLoop(srv *server) {
 	for {
 		select {
 		case connection := <-srv.newConnections:
-			client := &ClientInfo{connectionId, connection, make(chan int)}
+			client := &ClientInfo{connectionId, connection, nil, 1}
 			srv.clients[connectionId] = client
 			connectionId += 1
 			go readHandlerForClient(srv, client)
-			go writeHandlerForClient(srv, client)
 		}
 	}
 }
@@ -89,24 +100,28 @@ func runEventLoop(srv *server) {
 func readHandlerForClient(srv *server, client *ClientInfo) {
 	for {
 		select {
-		case <-client.quitSignal:
-			return
 		default:
 			request, clientAddr, err := ReadMessage(client.connection)
 			if err == nil {
 				switch request.Type {
 				case MsgConnect:
-					fmt.Printf("New Connection!\n")
+					fmt.Printf("New Connection From Client: %v!\n", clientAddr)
 					response := NewAck(client.connectionId, 0)
 					err = WriteMessage(client.connection, clientAddr, response)
 					if err != nil {
-						fmt.Printf("Error: %v\n", err)
+						fmt.Printf("Server Error: %v\n", err)
+					}
+					client.addr = clientAddr
+				case MsgData:
+					fmt.Printf("New Data From Client: %v!\n", clientAddr)
+					srv.dataBuffer <- &DataBufferElement{client.connectionId, request.Payload}
+					response := NewAck(client.connectionId, request.SeqNum)
+					err = WriteMessage(client.connection, clientAddr, response)
+					if err != nil {
+						fmt.Printf("Server Error: %v\n", err)
 					}
 				}
 			}
 		}
 	}
-}
-
-func writeHandlerForClient(srv *server, client *ClientInfo) {
 }
