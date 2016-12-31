@@ -3,9 +3,13 @@
 package lsp
 
 import "errors"
+import "encoding/json"
+import "github.com/cmu440/lspnet"
+import "fmt"
 
 type client struct {
-	// TODO: implement this!
+	serverAddr *lspnet.UDPAddr
+	connection *lspnet.UDPConn
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -19,7 +23,27 @@ type client struct {
 // hostport is a colon-separated string identifying the server's host address
 // and port number (i.e., "localhost:9999").
 func NewClient(hostport string, params *Params) (Client, error) {
-	return nil, errors.New("not yet implemented")
+	addr, err := lspnet.ResolveUDPAddr("udp", hostport)
+	if err != nil {
+		return nil, err
+	}
+
+	// create connection
+	connection, err := lspnet.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	packet := NewConnect()
+	var packetInByte []byte
+	packetInByte, err = json.Marshal(*packet)
+	_, err = connection.Write(packetInByte)
+	if err != nil {
+		return nil, err
+	}
+
+	c := &client{addr, connection}
+
+	return c, nil
 }
 
 func (c *client) ConnID() int {

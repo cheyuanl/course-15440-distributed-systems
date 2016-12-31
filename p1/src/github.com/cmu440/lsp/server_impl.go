@@ -5,14 +5,18 @@ package lsp
 import "errors"
 import "strconv"
 import "github.com/cmu440/lspnet"
+import "encoding/json"
+import "fmt"
 
 type server struct {
-	addr    *lspnet.UDPAddr
-	clients map[int]*ClientInfo
+	addr           *lspnet.UDPAddr
+	clients        map[int]*ClientInfo
+	newConnections chan *lspnet.UDPConn
 }
 
 type ClientInfo struct {
 	connection *lspnet.UDPConn
+	buffer     map[int][]byte
 	quitSignal chan int
 }
 
@@ -28,43 +32,82 @@ func NewServer(port int, params *Params) (Server, error) {
 		return nil, err
 	}
 
-	s := &server{
+	srv := &server{
 		addr,
-		make(map[int]UDPConn),
+		make(map[int]*ClientInfo),
+		make(chan *lspnet.UDPConn),
 	}
 
-	go acceptClients(s)
+	go acceptClients(srv)
+	go runEventLoop(srv)
 
-	return s, nil
+	return srv, nil
 }
 
-func (s *server) Read() (int, []byte, error) {
+func (srv *server) Read() (int, []byte, error) {
 	// TODO: remove this line when you are ready to begin implementing this method.
 	select {} // Blocks indefinitely.
 	return -1, nil, errors.New("not yet implemented")
 }
 
-func (s *server) Write(connID int, payload []byte) error {
+func (srv *server) Write(connID int, payload []byte) error {
 	return errors.New("not yet implemented")
 }
 
-func (s *server) CloseConn(connID int) error {
+func (srv *server) CloseConn(connID int) error {
 	return errors.New("not yet implemented")
 }
 
-func (s *server) Close() error {
+func (srv *server) Close() error {
 	return errors.New("not yet implemented")
 }
 
-func acceptClients(s *server) {
-	id := 1
+func acceptClients(srv *server) {
 	for {
-		conn, err := lspnet.ListenUDP("udp", s.addr)
+		conn, err := lspnet.ListenUDP("udp", srv.addr)
 		if err == nil {
-			// get new client
-			c := &ClientInfo{conn, make(chan int)}
-			s.clients[id] = c
-			id += 1
+			// new client
+			srv.newConnections <- conn
 		}
 	}
+}
+
+func runEventLoop(srv *server) {
+	clientId := 1
+
+	for {
+		select {
+		case connection := <-srv.newConnections:
+			client := &ClientInfo{connection, make(map[int][]byte), make(chan int)}
+			srv.clients[clientId] = client
+			clientId += 1
+			go readHandlerForClient(srv, client)
+			go writeHandlerForClient(srv, client)
+		}
+	}
+}
+
+func readHandlerForClient(srv *server, client *ClientInfo) {
+	for {
+		select {
+		case <-client.quitSignal:
+			return
+		default:
+			var packetInByte []byte = make([]byte, 2000)
+			n, err := client.connection.Read(packetInByte)
+			if err == nil {
+				packetInByte = packetInByte[0:n]
+				if err == nil {
+					var packet Message
+					err = json.Unmarshal(packetInByte, &packet)
+					if err == nil {
+						fmt.Printf("Message: %v\n", packet)
+					}
+				}
+			}
+		}
+	}
+}
+
+func writeHandlerForClient(srv *server, client *ClientInfo) {
 }
