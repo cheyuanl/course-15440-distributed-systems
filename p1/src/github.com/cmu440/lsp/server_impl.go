@@ -5,7 +5,6 @@ package lsp
 import "errors"
 import "strconv"
 import "github.com/cmu440/lspnet"
-import "encoding/json"
 import "fmt"
 
 type server struct {
@@ -93,17 +92,9 @@ func readHandlerForClient(srv *server, client *ClientInfo) {
 		case <-client.quitSignal:
 			return
 		default:
-			var packetInByte []byte = make([]byte, 2000)
-			n, err := client.connection.Read(packetInByte)
+			message, err := ReadMessage(client.connection)
 			if err == nil {
-				packetInByte = packetInByte[0:n]
-				if err == nil {
-					var packet Message
-					err = json.Unmarshal(packetInByte, &packet)
-					if err == nil {
-						fmt.Printf("Message: %v\n", packet)
-					}
-				}
+				fmt.Printf("%v\n", message)
 			}
 		}
 	}

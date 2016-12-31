@@ -3,9 +3,7 @@
 package lsp
 
 import "errors"
-import "encoding/json"
 import "github.com/cmu440/lspnet"
-import "fmt"
 
 type client struct {
 	serverAddr *lspnet.UDPAddr
@@ -34,12 +32,7 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		return nil, err
 	}
 	packet := NewConnect()
-	var packetInByte []byte
-	packetInByte, err = json.Marshal(*packet)
-	_, err = connection.Write(packetInByte)
-	if err != nil {
-		return nil, err
-	}
+	WriteMessage(connection, packet)
 
 	c := &client{addr, connection}
 
