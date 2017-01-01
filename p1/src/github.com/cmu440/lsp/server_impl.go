@@ -8,15 +8,14 @@ import "github.com/cmu440/lspnet"
 import "fmt"
 
 type server struct {
-	addr           *lspnet.UDPAddr
-	clients        map[int]*ClientInfo
-	newConnections chan *lspnet.UDPConn
-	dataBuffer     chan *DataBufferElement
+	addr       *lspnet.UDPAddr
+	clients    map[int]*ClientInfo
+	connection *lspnet.UDPConn
+	dataBuffer chan *DataBufferElement
 }
 
 type ClientInfo struct {
 	connectionId       int
-	connection         *lspnet.UDPConn
 	addr               *lspnet.UDPAddr
 	nextSequenceNumber int
 }
@@ -37,86 +36,76 @@ func NewServer(port int, params *Params) (Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	conn, err := lspnet.ListenUDP("udp", addr)
 
-	srv := &server{
+	s := &server{
 		addr,
 		make(map[int]*ClientInfo),
-		make(chan *lspnet.UDPConn),
+		conn,
 		make(chan *DataBufferElement),
 	}
 
-	go acceptClients(srv)
-	go runEventLoop(srv)
+	go runEventLoop(s)
 
-	return srv, nil
+	return s, nil
 }
 
-func (srv *server) Read() (int, []byte, error) {
-	element := <-srv.dataBuffer
+func (s *server) Read() (int, []byte, error) {
+	element := <-s.dataBuffer
 	return element.connectionId, element.data, nil
 }
 
-func (srv *server) Write(connID int, payload []byte) error {
-	client := srv.clients[connID]
+func (s *server) Write(connID int, payload []byte) error {
+	client := s.clients[connID]
 	message := NewData(connID, client.nextSequenceNumber, len(payload), payload)
-	go WriteMessage(client.connection, client.addr, message)
+	go WriteMessage(s.connection, client.addr, message)
 	client.nextSequenceNumber += 1
 
 	return nil
 }
 
-func (srv *server) CloseConn(connID int) error {
+func (s *server) CloseConn(connID int) error {
 	return errors.New("not yet implemented")
 }
 
-func (srv *server) Close() error {
+func (s *server) Close() error {
 	return errors.New("not yet implemented")
 }
 
-func acceptClients(srv *server) {
-	for {
-		conn, err := lspnet.ListenUDP("udp", srv.addr)
-		if err == nil {
-			// new client
-			srv.newConnections <- conn
-		}
-	}
-}
-
-func runEventLoop(srv *server) {
+func runEventLoop(s *server) {
 	connectionId := 1
 
 	for {
 		select {
-		case connection := <-srv.newConnections:
-			client := &ClientInfo{connectionId, connection, nil, 1}
-			srv.clients[connectionId] = client
-			connectionId += 1
-			go readHandlerForClient(srv, client)
-		}
-	}
-}
-
-func readHandlerForClient(srv *server, client *ClientInfo) {
-	for {
-		select {
 		default:
-			request, clientAddr, err := ReadMessage(client.connection)
+			request, clientAddr, err := ReadMessage(s.connection)
 			if err == nil {
 				switch request.Type {
 				case MsgConnect:
-					fmt.Printf("New Connection From Client: %v!\n", clientAddr)
+					fmt.Printf("New Connection From Client %v with ConnectionId %v\n", clientAddr, connectionId)
+
+					// create new client info
+					client := &ClientInfo{connectionId, clientAddr, 1}
+					s.clients[connectionId] = client
+					connectionId += 1
+
+					// send ack
 					response := NewAck(client.connectionId, 0)
-					err = WriteMessage(client.connection, clientAddr, response)
+					err = WriteMessage(s.connection, clientAddr, response)
 					if err != nil {
 						fmt.Printf("Server Error: %v\n", err)
 					}
-					client.addr = clientAddr
 				case MsgData:
 					fmt.Printf("New Data From Client: %v!\n", clientAddr)
-					srv.dataBuffer <- &DataBufferElement{client.connectionId, request.Payload}
+
+					client := s.clients[request.ConnID]
+
+					// save data into buffer
+					s.dataBuffer <- &DataBufferElement{client.connectionId, request.Payload}
+
+					// send ack
 					response := NewAck(client.connectionId, request.SeqNum)
-					err = WriteMessage(client.connection, clientAddr, response)
+					err = WriteMessage(s.connection, clientAddr, response)
 					if err != nil {
 						fmt.Printf("Server Error: %v\n", err)
 					}
