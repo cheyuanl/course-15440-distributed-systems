@@ -122,153 +122,95 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 		// fmt.Printf("[Client %v] Min-UnAcked %v, Next %v\n", c.connectionId, minUnAckedOutMessageSequenceNumber, c.outMessageSequenceNumber)
 		// fmt.Printf("[Client %v] Next Buffer %v\n", c.connectionId, c.dataBufferSequenceNumber)
 
-		if c.outMessageSequenceNumber-minUnAckedOutMessageSequenceNumber < params.WindowSize {
-			select {
-			case inMessage := <-c.inMessages:
-				// fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
-				epochCount = 0
+		select {
+		case inMessage := <-c.inMessages:
+			// fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
+			epochCount = 0
 
-				switch inMessage.Type {
-				case MsgData:
-					// fmt.Printf("[Client %v] New Data From Server: %v %v!\n", c.connectionId, inMessage.SeqNum, c.dataBufferSequenceNumber)
+			switch inMessage.Type {
+			case MsgData:
+				// fmt.Printf("[Client %v] New Data From Server: %v %v!\n", c.connectionId, inMessage.SeqNum, c.dataBufferSequenceNumber)
 
-					// save data into buffer
-					_, exists := c.dataBuffer[inMessage.SeqNum]
-					if !exists {
-						c.dataBuffer[inMessage.SeqNum] = inMessage.Payload
-					}
+				// save data into buffer
+				_, exists := c.dataBuffer[inMessage.SeqNum]
+				if !exists {
+					c.dataBuffer[inMessage.SeqNum] = inMessage.Payload
+				}
 
-					if inMessage.SeqNum == c.dataBufferSequenceNumber {
-						i := c.dataBufferSequenceNumber
-						for {
-							data, exists := c.dataBuffer[i]
-							if exists {
-								c.dataBufferChan <- data
-								c.dataBufferSequenceNumber += 1
-								delete(c.dataBuffer, i)
-							} else {
-								break
-							}
-							i += 1
+				if inMessage.SeqNum == c.dataBufferSequenceNumber {
+					i := c.dataBufferSequenceNumber
+					for {
+						data, exists := c.dataBuffer[i]
+						if exists {
+							c.dataBufferChan <- data
+							c.dataBufferSequenceNumber += 1
+							delete(c.dataBuffer, i)
+						} else {
+							break
 						}
-					}
-
-					// send ack
-					response := NewAck(c.connectionId, inMessage.SeqNum)
-					go WriteMessage(c.connection, nil, response)
-
-				case MsgAck:
-					// fmt.Printf("Ack From Server!\n")
-
-					outMessage, exists := c.outMessages[inMessage.SeqNum]
-					if exists {
-						if outMessage.Type == MsgConnect {
-							c.connectionId = inMessage.ConnID
-							statusSignal <- 0
-						}
-						delete(c.outMessages, inMessage.SeqNum)
+						i += 1
 					}
 				}
 
-			case outMessage := <-c.outMessageChan:
-				outMessage.SeqNum = c.outMessageSequenceNumber
-				// fmt.Printf("[Client %v] Write Message: %v\n", c.connectionId, outMessage)
+				// send ack
+				response := NewAck(c.connectionId, inMessage.SeqNum)
+				go WriteMessage(c.connection, nil, response)
 
-				c.outMessages[c.outMessageSequenceNumber] = outMessage
-				c.outMessageSequenceNumber += 1
-				go WriteMessage(c.connection, nil, outMessage)
+			case MsgAck:
+				// fmt.Printf("Ack From Server!\n")
 
-			case <-timer.C:
-				// fmt.Printf("[Client %v] Epoch!\n", c.connectionId)
-
-				epochCount += 1
-
-				if c.connectionId < 0 {
-					connectMessage := NewConnect()
-					go WriteMessage(c.connection, nil, connectMessage)
-				} else {
-					if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
-						outMessage := NewAck(c.connectionId, 0)
-						go WriteMessage(c.connection, nil, outMessage)
+				outMessage, exists := c.outMessages[inMessage.SeqNum]
+				if exists {
+					if outMessage.Type == MsgConnect {
+						c.connectionId = inMessage.ConnID
+						statusSignal <- 0
 					}
+					delete(c.outMessages, inMessage.SeqNum)
 				}
-				for _, outMessage := range c.outMessages {
-					// fmt.Printf("[Client %v] Resend Message from Client: %v\n", c.connectionId, outMessage)
-					go WriteMessage(c.connection, nil, outMessage)
-				}
-
-				timer.Reset(0)
-
 			}
-		} else {
-			select {
-			case inMessage := <-c.inMessages:
-				// fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
-				epochCount = 0
 
-				switch inMessage.Type {
-				case MsgData:
-					// fmt.Printf("[Client %v] New Data From Server: %v %v!\n", c.connectionId, inMessage.SeqNum, c.dataBufferSequenceNumber)
+		case <-timer.C:
+			// fmt.Printf("[Client %v] Epoch!\n", c.connectionId)
 
-					// save data into buffer
-					_, exists := c.dataBuffer[inMessage.SeqNum]
-					if !exists {
-						c.dataBuffer[inMessage.SeqNum] = inMessage.Payload
-					}
+			epochCount += 1
 
-					if inMessage.SeqNum == c.dataBufferSequenceNumber {
-						i := c.dataBufferSequenceNumber
-						for {
-							data, exists := c.dataBuffer[i]
-							if exists {
-								c.dataBufferChan <- data
-								c.dataBufferSequenceNumber += 1
-								delete(c.dataBuffer, i)
-							} else {
-								break
-							}
-							i += 1
-						}
-					}
-
-					// send ack
-					response := NewAck(c.connectionId, inMessage.SeqNum)
-					go WriteMessage(c.connection, nil, response)
-
-				case MsgAck:
-					// fmt.Printf("Ack From Server!\n")
-
-					outMessage, exists := c.outMessages[inMessage.SeqNum]
-					if exists {
-						if outMessage.Type == MsgConnect {
-							c.connectionId = inMessage.ConnID
-							statusSignal <- 0
-						}
-						delete(c.outMessages, inMessage.SeqNum)
-					}
-				}
-
-			case <-timer.C:
-				// fmt.Printf("[Client %v] Epoch!\n", c.connectionId)
-
-				epochCount += 1
-
-				if c.connectionId < 0 {
-					connectMessage := NewConnect()
-					go WriteMessage(c.connection, nil, connectMessage)
-				} else {
-					if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
-						outMessage := NewAck(c.connectionId, 0)
-						go WriteMessage(c.connection, nil, outMessage)
-					}
-				}
-				for _, outMessage := range c.outMessages {
-					// fmt.Printf("[Client %v] Resend Message from Client: %v\n", c.connectionId, outMessage)
+			if c.connectionId < 0 {
+				connectMessage := NewConnect()
+				go WriteMessage(c.connection, nil, connectMessage)
+			} else {
+				if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
+					outMessage := NewAck(c.connectionId, 0)
 					go WriteMessage(c.connection, nil, outMessage)
 				}
+			}
+			for _, outMessage := range c.outMessages {
+				// fmt.Printf("[Client %v] Resend Message from Client: %v\n", c.connectionId, outMessage)
+				go WriteMessage(c.connection, nil, outMessage)
+			}
 
-				timer.Reset(0)
+			timer.Reset(0)
 
+		default:
+			time.Sleep(time.Nanosecond)
+
+			minUnAckedOutMessageSequenceNumber := c.outMessageSequenceNumber
+			for sequenceNumber, _ := range c.outMessages {
+				if minUnAckedOutMessageSequenceNumber > sequenceNumber {
+					minUnAckedOutMessageSequenceNumber = sequenceNumber
+				}
+			}
+
+			if c.outMessageSequenceNumber-minUnAckedOutMessageSequenceNumber < params.WindowSize {
+				select {
+				case outMessage := <-c.outMessageChan:
+					outMessage.SeqNum = c.outMessageSequenceNumber
+					// fmt.Printf("[Client %v] Write Message: %v\n", c.connectionId, outMessage)
+
+					c.outMessages[c.outMessageSequenceNumber] = outMessage
+					c.outMessageSequenceNumber += 1
+					go WriteMessage(c.connection, nil, outMessage)
+				default:
+				}
 			}
 		}
 	}
