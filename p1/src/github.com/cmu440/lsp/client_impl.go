@@ -129,6 +129,8 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 				response := NewAck(c.connectionId, inMessage.SeqNum)
 				go WriteMessage(c.connection, nil, response)
 			case MsgAck:
+				fmt.Printf("Ack From Server!\n")
+
 				outMessage, exists := c.outMessages[inMessage.SeqNum]
 				if exists {
 					if outMessage.Type == MsgConnect {
@@ -139,6 +141,7 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 				}
 			}
 		case outMessage := <-c.outMessagesChan:
+			outMessage.SeqNum = c.nextSequenceNumber
 			c.outMessages[c.nextSequenceNumber] = outMessage
 			c.nextSequenceNumber += 1
 			go WriteMessage(c.connection, nil, outMessage)

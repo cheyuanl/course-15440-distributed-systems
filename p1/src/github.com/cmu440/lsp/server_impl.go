@@ -24,13 +24,16 @@ type MessageAndAddr struct {
 }
 
 type ClientInfo struct {
-	connectionId       int
-	addr               *lspnet.UDPAddr
-	outMessages        map[int]*Message
-	outMessagesChan    chan *Message
-	nextSequenceNumber int
-	epochSignal        chan int
-	receivedData       bool
+	connectionId             int
+	addr                     *lspnet.UDPAddr
+	inMessagesChan           chan *Message
+	outMessages              map[int]*Message
+	outMessagesChan          chan *Message
+	outMessageSequenceNumber int
+	epochSignal              chan int
+	receivedData             bool
+	dataBuffer               map[int][]byte
+	databufferSequenceNumber int
 }
 
 type DataBufferElement struct {
@@ -104,10 +107,6 @@ func eventLoopForServer(s *server, params *Params) {
 
 	for {
 		select {
-		case <-timer.C:
-			for _, client := range s.clients {
-				client.epochSignal <- 1
-			}
 		case messageAndAddr := <-s.inMessages:
 			inMessage := messageAndAddr.message
 			clientAddr := messageAndAddr.addr
@@ -120,11 +119,14 @@ func eventLoopForServer(s *server, params *Params) {
 				client := &ClientInfo{
 					connectionId,
 					clientAddr,
+					make(chan *Message),
 					make(map[int]*Message),
 					make(chan *Message),
 					1,
 					make(chan int),
-					false}
+					false,
+					make(map[int][]byte),
+					1}
 				s.clients[connectionId] = client
 				connectionId += 1
 				go writeHandlerForClient(s, client)
@@ -132,18 +134,13 @@ func eventLoopForServer(s *server, params *Params) {
 				// send ack
 				response := NewAck(client.connectionId, 0)
 				go WriteMessage(s.connection, clientAddr, response)
-			case MsgData:
-				fmt.Printf("New Data From Client: %v!\n", clientAddr)
-
+			default:
 				client := s.clients[inMessage.ConnID]
-				client.receivedData = true
-
-				// save data into buffer
-				s.dataBuffer <- &DataBufferElement{client.connectionId, inMessage.Payload}
-
-				// send ack
-				response := NewAck(client.connectionId, inMessage.SeqNum)
-				go WriteMessage(s.connection, clientAddr, response)
+				client.inMessagesChan <- inMessage
+			}
+		case <-timer.C:
+			for _, client := range s.clients {
+				client.epochSignal <- 1
 			}
 		}
 	}
@@ -152,21 +149,59 @@ func eventLoopForServer(s *server, params *Params) {
 func writeHandlerForClient(s *server, c *ClientInfo) {
 	for {
 		select {
-		case <-c.epochSignal:
-			if !c.receivedData {
-				response := NewAck(c.connectionId, 0)
+		case inMessage := <-c.inMessagesChan:
+			switch inMessage.Type {
+			case MsgData:
+				fmt.Printf("New Data From Client: %v!\n", c.connectionId)
+
+				// save data into buffer
+				_, exists := c.dataBuffer[inMessage.SeqNum]
+				if !exists {
+					c.dataBuffer[inMessage.SeqNum] = inMessage.Payload
+				}
+
+				if inMessage.SeqNum == c.databufferSequenceNumber {
+					i := c.databufferSequenceNumber
+					for {
+						data, exists := c.dataBuffer[i]
+						if exists {
+							s.dataBuffer <- &DataBufferElement{c.connectionId, data}
+							c.databufferSequenceNumber += 1
+							delete(c.dataBuffer, i)
+						} else {
+							break
+						}
+						i += 1
+					}
+				}
+
+				// send ack
+				response := NewAck(c.connectionId, inMessage.SeqNum)
 				go WriteMessage(s.connection, c.addr, response)
+			case MsgAck:
+				fmt.Printf("New Ack From Client: %v!\n", c.connectionId)
+
+				_, exists := c.outMessages[inMessage.SeqNum]
+				if exists {
+					delete(c.outMessages, inMessage.SeqNum)
+				}
+			}
+		case outMessage := <-c.outMessagesChan:
+			outMessage.SeqNum = c.outMessageSequenceNumber
+			c.outMessages[c.outMessageSequenceNumber] = outMessage
+			c.outMessageSequenceNumber += 1
+			err := WriteMessage(s.connection, c.addr, outMessage)
+			if err != nil {
+				fmt.Printf("Server Error: %v\n", err)
+			}
+		case <-c.epochSignal:
+			if c.databufferSequenceNumber > 1 || len(c.dataBuffer) > 0 {
+				outMessage := NewAck(c.connectionId, 0)
+				go WriteMessage(s.connection, c.addr, outMessage)
 			} else {
 				for _, outMessage := range c.outMessages {
 					go WriteMessage(s.connection, c.addr, outMessage)
 				}
-			}
-		case outMessage := <-c.outMessagesChan:
-			c.outMessages[c.nextSequenceNumber] = outMessage
-			c.nextSequenceNumber += 1
-			err := WriteMessage(s.connection, c.addr, outMessage)
-			if err != nil {
-				fmt.Printf("Server Error: %v\n", err)
 			}
 		}
 	}
