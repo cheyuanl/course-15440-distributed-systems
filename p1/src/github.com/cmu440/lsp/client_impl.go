@@ -83,7 +83,11 @@ func readHandler(c *client) {
 		switch request.Type {
 		case MsgData:
 			fmt.Printf("New Data From Server!\n")
+
+			// save data into buffer
 			c.dataBuffer <- request.Payload
+
+			// send ack
 			response := NewAck(c.connectionId, request.SeqNum)
 			err = WriteMessage(c.connection, nil, response)
 			if err != nil {
