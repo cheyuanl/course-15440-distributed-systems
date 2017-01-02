@@ -45,7 +45,7 @@ func NewServer(port int, params *Params) (Server, error) {
 		make(chan *DataBufferElement),
 	}
 
-	go runEventLoop(s)
+	go eventLoopForServer(s)
 
 	return s, nil
 }
@@ -72,15 +72,16 @@ func (s *server) Close() error {
 	return errors.New("not yet implemented")
 }
 
-func runEventLoop(s *server) {
+func eventLoopForServer(s *server) {
 	connectionId := 1
 
 	for {
 		select {
 		default:
-			request, clientAddr, err := ReadMessage(s.connection)
+			inMessage, clientAddr, err := ReadMessage(s.connection)
 			if err == nil {
-				switch request.Type {
+				fmt.Printf("Client Request: %v\n", inMessage)
+				switch inMessage.Type {
 				case MsgConnect:
 					fmt.Printf("New Connection From Client %v with ConnectionId %v\n", clientAddr, connectionId)
 
@@ -98,13 +99,13 @@ func runEventLoop(s *server) {
 				case MsgData:
 					fmt.Printf("New Data From Client: %v!\n", clientAddr)
 
-					client := s.clients[request.ConnID]
+					client := s.clients[inMessage.ConnID]
 
 					// save data into buffer
-					s.dataBuffer <- &DataBufferElement{client.connectionId, request.Payload}
+					s.dataBuffer <- &DataBufferElement{client.connectionId, inMessage.Payload}
 
 					// send ack
-					response := NewAck(client.connectionId, request.SeqNum)
+					response := NewAck(client.connectionId, inMessage.SeqNum)
 					err = WriteMessage(s.connection, clientAddr, response)
 					if err != nil {
 						fmt.Printf("Server Error: %v\n", err)

@@ -5,7 +5,7 @@ import (
 	"github.com/cmu440/lspnet"
 )
 
-func ReadMessage(connection *lspnet.UDPConn) (Message, *lspnet.UDPAddr, error) {
+func ReadMessage(connection *lspnet.UDPConn) (*Message, *lspnet.UDPAddr, error) {
 	packet := make([]byte, 2000)
 	n, addr, err := connection.ReadFromUDP(packet)
 	if err == nil {
@@ -14,11 +14,11 @@ func ReadMessage(connection *lspnet.UDPConn) (Message, *lspnet.UDPAddr, error) {
 			var message Message
 			err = json.Unmarshal(packet, &message)
 			if err == nil {
-				return message, addr, nil
+				return &message, addr, nil
 			}
 		}
 	}
-	return Message{}, addr, err
+	return nil, addr, err
 }
 
 func WriteMessage(connection *lspnet.UDPConn, addr *lspnet.UDPAddr, message *Message) error {

@@ -2,14 +2,20 @@
 
 package lsp
 
-import "errors"
-import "github.com/cmu440/lspnet"
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"github.com/cmu440/lspnet"
+	"time"
+)
 
 type client struct {
 	connectionId       int
 	connection         *lspnet.UDPConn
+	inMessages         chan *Message
+	outMessages        map[int]*Message
 	nextSequenceNumber int
+	outMessagesChan    chan *Message
 	dataBuffer         chan []byte
 }
 
@@ -29,26 +35,38 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		return nil, err
 	}
 
-	// create connection
+	// get connection
 	connection, err := lspnet.DialUDP("udp", nil, serverAddr)
 	if err != nil {
 		return nil, err
 	}
-	request := NewConnect()
-	WriteMessage(connection, nil, request)
-	response, _, err := ReadMessage(connection)
-	if err != nil {
-		return nil, err
+
+	c := &client{
+		-1,
+		connection,
+		make(chan *Message),
+		make(map[int]*Message),
+		0,
+		make(chan *Message),
+		make(chan []byte)}
+	statusChan := make(chan int)
+
+	// send connection message
+	connectMessage := NewConnect()
+	c.outMessages[c.nextSequenceNumber] = connectMessage
+	c.nextSequenceNumber += 1
+	WriteMessage(connection, nil, connectMessage)
+
+	go readHandlerForClient(c)
+	go eventLoopForClient(c, statusChan, params)
+
+	status := <-statusChan
+
+	if status == 0 {
+		return c, nil
 	}
-	if response.Type != MsgAck {
-		return nil, err
-	}
 
-	c := &client{response.ConnID, connection, 1, make(chan []byte)}
-
-	go readHandler(c)
-
-	return c, nil
+	return c, errors.New("Can not create new client!")
 }
 
 func (c *client) ConnID() int {
@@ -61,9 +79,10 @@ func (c *client) Read() ([]byte, error) {
 }
 
 func (c *client) Write(payload []byte) error {
-	message := NewData(c.connectionId, c.nextSequenceNumber, len(payload), payload)
-	go WriteMessage(c.connection, nil, message)
-	c.nextSequenceNumber += 1
+	fmt.Printf("Write Data to Server\n")
+
+	message := NewData(c.connectionId, -1, len(payload), payload)
+	c.outMessagesChan <- message
 
 	return nil
 }
@@ -72,27 +91,56 @@ func (c *client) Close() error {
 	return errors.New("not yet implemented")
 }
 
-func readHandler(c *client) {
+func readHandlerForClient(c *client) {
 	for {
-		request, _, err := ReadMessage(c.connection)
+		inMessage, _, err := ReadMessage(c.connection)
 		if err != nil {
 			fmt.Printf("Client Error: %v\n", err)
+		} else {
+			c.inMessages <- inMessage
 		}
+	}
+}
 
-		fmt.Printf("Request: %v\n", request)
-		switch request.Type {
-		case MsgData:
-			fmt.Printf("New Data From Server!\n")
+func eventLoopForClient(c *client, statusChan chan int, params *Params) {
+	epochCount := 0
+	timer := time.NewTimer(time.Duration(params.EpochMillis) * time.Millisecond)
 
-			// save data into buffer
-			c.dataBuffer <- request.Payload
-
-			// send ack
-			response := NewAck(c.connectionId, request.SeqNum)
-			err = WriteMessage(c.connection, nil, response)
-			if err != nil {
-				fmt.Printf("Client Error: %v\n", err)
+	for {
+		select {
+		case <-timer.C:
+			epochCount += 1
+			if epochCount == params.EpochLimit {
+				statusChan <- 1
+				return
+			} else {
 			}
+		case inMessage := <-c.inMessages:
+			fmt.Printf("Client Request: %v\n", inMessage)
+			switch inMessage.Type {
+			case MsgData:
+				fmt.Printf("New Data From Server!\n")
+
+				// save data into buffer
+				c.dataBuffer <- inMessage.Payload
+
+				// send ack
+				response := NewAck(c.connectionId, inMessage.SeqNum)
+				go WriteMessage(c.connection, nil, response)
+			case MsgAck:
+				outMessage, exists := c.outMessages[inMessage.SeqNum]
+				if exists {
+					if outMessage.Type == MsgConnect {
+						c.connectionId = inMessage.ConnID
+						statusChan <- 0
+					}
+					delete(c.outMessages, inMessage.SeqNum)
+				}
+			}
+		case outMessage := <-c.outMessagesChan:
+			c.outMessages[c.nextSequenceNumber] = outMessage
+			c.nextSequenceNumber += 1
+			go WriteMessage(c.connection, nil, outMessage)
 		}
 	}
 }
