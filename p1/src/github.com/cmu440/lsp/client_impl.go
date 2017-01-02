@@ -49,24 +49,25 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		0,
 		make(chan *Message),
 		make(chan []byte)}
-	statusChan := make(chan int)
+	statusSignal := make(chan int)
 
-	// send connection message
+	// send connect message
+	fmt.Printf("Send Connect Message\n")
 	connectMessage := NewConnect()
 	c.outMessages[c.nextSequenceNumber] = connectMessage
 	c.nextSequenceNumber += 1
 	WriteMessage(connection, nil, connectMessage)
 
 	go readHandlerForClient(c)
-	go eventLoopForClient(c, statusChan, params)
+	go eventLoopForClient(c, statusSignal, params)
 
-	status := <-statusChan
+	status := <-statusSignal
 
 	if status == 0 {
 		return c, nil
 	}
 
-	return c, errors.New("Can not create new client!")
+	return c, errors.New("Can Not Create New Client!")
 }
 
 func (c *client) ConnID() int {
@@ -102,7 +103,7 @@ func readHandlerForClient(c *client) {
 	}
 }
 
-func eventLoopForClient(c *client, statusChan chan int, params *Params) {
+func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 	epochCount := 0
 	timer := time.NewTimer(time.Duration(params.EpochMillis) * time.Millisecond)
 
@@ -111,7 +112,7 @@ func eventLoopForClient(c *client, statusChan chan int, params *Params) {
 		case <-timer.C:
 			epochCount += 1
 			if epochCount == params.EpochLimit {
-				statusChan <- 1
+				statusSignal <- 1
 				return
 			} else {
 			}
@@ -132,7 +133,7 @@ func eventLoopForClient(c *client, statusChan chan int, params *Params) {
 				if exists {
 					if outMessage.Type == MsgConnect {
 						c.connectionId = inMessage.ConnID
-						statusChan <- 0
+						statusSignal <- 0
 					}
 					delete(c.outMessages, inMessage.SeqNum)
 				}
