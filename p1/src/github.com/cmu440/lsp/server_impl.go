@@ -3,7 +3,6 @@
 package lsp
 
 import (
-	"errors"
 	"fmt"
 	"github.com/cmu440/lspnet"
 	"strconv"
@@ -99,7 +98,9 @@ func (s *server) Write(connID int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connID int) error {
-	return errors.New("not yet implemented")
+	s.clientClosedChan <- connID
+
+	return nil
 }
 
 func (s *server) Close() error {
