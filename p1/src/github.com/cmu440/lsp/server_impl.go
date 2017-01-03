@@ -10,12 +10,23 @@ import (
 	"time"
 )
 
+type ServerStatus int
+
+const (
+	NOT_CLOSEING ServerStatus = iota
+	START_CLOSING
+	CLIENTS_CLOSED
+	CONNECTION_CLOSED
+)
+
 type server struct {
-	addr           *lspnet.UDPAddr
-	clients        map[int]*ClientInfo
-	connection     *lspnet.UDPConn
-	inMessagesChan chan *MessageAndAddr
-	dataBufferChan chan *DataBufferElement
+	addr             *lspnet.UDPAddr
+	clients          map[int]*ClientInfo
+	connection       *lspnet.UDPConn
+	inMessagesChan   chan *MessageAndAddr
+	dataBufferChan   chan *DataBufferElement
+	status           ServerStatus
+	clientClosedChan chan int
 }
 
 type MessageAndAddr struct {
@@ -62,7 +73,9 @@ func NewServer(port int, params *Params) (Server, error) {
 		make(map[int]*ClientInfo),
 		conn,
 		make(chan *MessageAndAddr, 1000),
-		make(chan *DataBufferElement)}
+		make(chan *DataBufferElement, 1000),
+		NOT_CLOSEING,
+		make(chan int, 1000)}
 
 	go readHandlerForServer(s)
 	go eventLoopForServer(s, params)
@@ -76,7 +89,7 @@ func (s *server) Read() (int, []byte, error) {
 }
 
 func (s *server) Write(connID int, payload []byte) error {
-	fmt.Printf("Write Data to Client %v\n", connID)
+	// fmt.Printf("[Server] Write Data to Client %v\n", connID)
 
 	client := s.clients[connID]
 	message := NewData(connID, -1, len(payload), payload)
@@ -90,14 +103,29 @@ func (s *server) CloseConn(connID int) error {
 }
 
 func (s *server) Close() error {
-	return errors.New("not yet implemented")
+	s.status = START_CLOSING
+
+	for {
+		if s.status == CLIENTS_CLOSED {
+			s.connection.Close()
+		}
+		if s.status == CONNECTION_CLOSED {
+			fmt.Printf("[Server] Server Closed!\n")
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func readHandlerForServer(s *server) {
 	for {
 		inMessage, clientAddr, err := ReadMessage(s.connection)
 		if err != nil {
-			fmt.Printf("Server Error: %v\n", err)
+			if s.status == CLIENTS_CLOSED {
+				s.status = CONNECTION_CLOSED
+				fmt.Printf("[Server] Connection Closed!\n")
+				return
+			}
 		} else {
 			s.inMessagesChan <- &MessageAndAddr{inMessage, clientAddr}
 		}
@@ -127,7 +155,7 @@ func eventLoopForServer(s *server, params *Params) {
 					make(map[int]*Message),
 					make(chan *Message, 1000),
 					1,
-					make(chan int),
+					make(chan int, 1000),
 					false,
 					make(map[int][]byte),
 					1}
@@ -136,6 +164,7 @@ func eventLoopForServer(s *server, params *Params) {
 				go writeHandlerForClient(s, client, params)
 
 				// send ack
+				// fmt.Printf("New Connection Ack to Client %v\n", connectionId-1)
 				response := NewAck(client.connectionId, 0)
 				go WriteMessage(s.connection, clientAddr, response)
 			default:
@@ -143,20 +172,39 @@ func eventLoopForServer(s *server, params *Params) {
 				client.inMessageChan <- inMessage
 			}
 
-		case <-timer.C:
-			// fmt.Printf("Server Epoch!\n")
+		case connectionId := <-s.clientClosedChan:
+			fmt.Printf("[Server] Client %v Closed!\n", connectionId)
 
+			delete(s.clients, connectionId)
+			if len(s.clients) == 0 {
+				fmt.Printf("[Server] All Clients Closed!\n")
+				s.status = CLIENTS_CLOSED
+				return
+			}
+		case <-timer.C:
+			// fmt.Printf("[Server] Epoch!\n")
 			for _, client := range s.clients {
 				client.epochSignal <- 1
 			}
 
-			timer.Reset(0)
+			timer.Reset(time.Duration(params.EpochMillis) * time.Millisecond)
 		}
 	}
 }
 
 func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 	for {
+		if s.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 {
+			s.clientClosedChan <- c.connectionId
+			return
+		}
+
+		minUnAckedOutMessageSequenceNumber := c.outMessageSequenceNumber
+		for sequenceNumber, _ := range c.outMessages {
+			if minUnAckedOutMessageSequenceNumber > sequenceNumber {
+				minUnAckedOutMessageSequenceNumber = sequenceNumber
+			}
+		}
 
 		select {
 		case inMessage := <-c.inMessageChan:
@@ -212,13 +260,6 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 
 		default:
 			time.Sleep(time.Nanosecond)
-
-			minUnAckedOutMessageSequenceNumber := c.outMessageSequenceNumber
-			for sequenceNumber, _ := range c.outMessages {
-				if minUnAckedOutMessageSequenceNumber > sequenceNumber {
-					minUnAckedOutMessageSequenceNumber = sequenceNumber
-				}
-			}
 
 			if c.outMessageSequenceNumber-minUnAckedOutMessageSequenceNumber < params.WindowSize {
 				select {

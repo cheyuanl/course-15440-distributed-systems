@@ -10,6 +10,7 @@ import (
 )
 
 type client struct {
+	serverAddr               *lspnet.UDPAddr
 	connectionId             int
 	connection               *lspnet.UDPConn
 	inMessages               chan *Message
@@ -19,6 +20,7 @@ type client struct {
 	dataBuffer               map[int][]byte
 	dataBufferChan           chan []byte
 	dataBufferSequenceNumber int
+	closingSignal            chan error
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -44,6 +46,7 @@ func NewClient(hostport string, params *Params) (Client, error) {
 	}
 
 	c := &client{
+		serverAddr,
 		-1,
 		connection,
 		make(chan *Message, 1000),
@@ -51,12 +54,13 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		make(chan *Message, 1000),
 		0,
 		make(map[int][]byte),
-		make(chan []byte),
-		1}
+		make(chan []byte, 1000),
+		1,
+		make(chan error, 1000)}
 	statusSignal := make(chan int)
 
 	// send connect message
-	fmt.Printf("Send Connect Message\n")
+	// fmt.Printf("Send Connect Message\n")
 	connectMessage := NewConnect()
 	c.outMessages[c.outMessageSequenceNumber] = connectMessage
 	c.outMessageSequenceNumber += 1
@@ -79,8 +83,13 @@ func (c *client) ConnID() int {
 }
 
 func (c *client) Read() ([]byte, error) {
-	data := <-c.dataBufferChan
-	return data, nil
+	select {
+	case data := <-c.dataBufferChan:
+		return data, nil
+	case err := <-c.closingSignal:
+		fmt.Printf("[Client %v] Read Error\n", c.connectionId)
+		return nil, err
+	}
 }
 
 func (c *client) Write(payload []byte) error {
@@ -100,7 +109,11 @@ func readHandlerForClient(c *client) {
 	for {
 		inMessage, _, err := ReadMessage(c.connection)
 		if err != nil {
-			fmt.Printf("Client Error: %v\n", err)
+			// fmt.Printf("[Client %v] Error: %v\n", c.connectionId, err)
+			if c.connectionId > 0 {
+				c.closingSignal <- err
+				return
+			}
 		} else {
 			c.inMessages <- inMessage
 		}
@@ -171,34 +184,31 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 		case <-timer.C:
 			// fmt.Printf("[Client %v] Epoch!\n", c.connectionId)
-
 			epochCount += 1
 
-			if c.connectionId < 0 {
-				connectMessage := NewConnect()
-				go WriteMessage(c.connection, nil, connectMessage)
+			if epochCount == params.EpochLimit {
+				// fmt.Printf("[Client %v] Epoch Limit!\n", c.connectionId)
+				c.closingSignal <- errors.New("Lost Connection!")
 			} else {
-				if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
-					outMessage := NewAck(c.connectionId, 0)
+				if c.connectionId < 0 {
+					connectMessage := NewConnect()
+					go WriteMessage(c.connection, nil, connectMessage)
+				} else {
+					if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
+						outMessage := NewAck(c.connectionId, 0)
+						go WriteMessage(c.connection, nil, outMessage)
+					}
+				}
+				for _, outMessage := range c.outMessages {
+					// fmt.Printf("[Client %v] Resend Message from Client: %v\n", c.connectionId, outMessage)
 					go WriteMessage(c.connection, nil, outMessage)
 				}
 			}
-			for _, outMessage := range c.outMessages {
-				// fmt.Printf("[Client %v] Resend Message from Client: %v\n", c.connectionId, outMessage)
-				go WriteMessage(c.connection, nil, outMessage)
-			}
 
-			timer.Reset(0)
+			timer.Reset(time.Duration(params.EpochMillis) * time.Millisecond)
 
 		default:
 			time.Sleep(time.Nanosecond)
-
-			minUnAckedOutMessageSequenceNumber := c.outMessageSequenceNumber
-			for sequenceNumber, _ := range c.outMessages {
-				if minUnAckedOutMessageSequenceNumber > sequenceNumber {
-					minUnAckedOutMessageSequenceNumber = sequenceNumber
-				}
-			}
 
 			if c.outMessageSequenceNumber-minUnAckedOutMessageSequenceNumber < params.WindowSize {
 				select {
