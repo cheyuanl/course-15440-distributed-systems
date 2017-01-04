@@ -36,6 +36,7 @@ type ClientInfo struct {
 	receivedData             bool
 	dataBuffer               map[int][]byte
 	dataBufferSequenceNumber int
+	closingChan              chan int
 }
 
 type DataBufferElement struct {
@@ -63,8 +64,8 @@ func NewServer(port int, params *Params) (Server, error) {
 		addr,
 		make(map[int]*ClientInfo),
 		conn,
-		make(chan *MessageAndAddr, 1000),
-		make(chan *DataBufferElement, 1000),
+		make(chan *MessageAndAddr, 10000),
+		make(chan *DataBufferElement, 10000),
 		NOT_CLOSING,
 		make(chan int, 1000),
 		make(chan error, 1000)}
@@ -95,6 +96,8 @@ func (s *server) Write(connID int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connID int) error {
+	// fmt.Printf("[Server] Close Client %v\n", connID)
+
 	s.clientClosedChan <- connID
 
 	return nil
@@ -144,6 +147,18 @@ func eventLoopForServer(s *server, params *Params) {
 
 			switch inMessage.Type {
 			case MsgConnect:
+				duplicate := false
+				for _, client := range s.clients {
+					// fmt.Printf("Addr: %v, Addr: %v\n", client.addr, clientAddr)
+					if client.addr.String() == clientAddr.String() {
+						duplicate = true
+						break
+					}
+				}
+				if duplicate {
+					continue
+				}
+
 				// fmt.Printf("New Connection From Client %v\n", connectionId)
 
 				// create new client info
@@ -156,7 +171,8 @@ func eventLoopForServer(s *server, params *Params) {
 					1,
 					false,
 					make(map[int][]byte),
-					1}
+					1,
+					make(chan int, 1000)}
 				s.clients[connectionId] = client
 				connectionId += 1
 				go writeHandlerForClient(s, client, params)
@@ -175,7 +191,12 @@ func eventLoopForServer(s *server, params *Params) {
 		case connectionId := <-s.clientClosedChan:
 			// fmt.Printf("[Server] Client %v Closed!\n", connectionId)
 
+			client, exists := s.clients[connectionId]
+			if exists {
+				client.closingChan <- 1
+			}
 			delete(s.clients, connectionId)
+
 			if len(s.clients) == 0 && s.status == START_CLOSING {
 				// fmt.Printf("[Server] All Clients Closed!\n")
 				s.status = HANDLER_CLOSED
@@ -203,6 +224,9 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 		}
 
 		select {
+		case <-c.closingChan:
+			return
+
 		case inMessage := <-c.inMessageChan:
 			// fmt.Printf("[Server] New Message From Client %v\n", c.connectionId)
 

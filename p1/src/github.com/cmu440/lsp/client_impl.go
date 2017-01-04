@@ -20,7 +20,7 @@ type client struct {
 	dataBuffer               map[int][]byte
 	dataBufferChan           chan []byte
 	dataBufferSequenceNumber int
-	closingSignal            chan error
+	connectionError          error
 	status                   Status
 }
 
@@ -57,7 +57,7 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		make(map[int][]byte),
 		make(chan []byte, 1000),
 		1,
-		make(chan error, 1000),
+		nil,
 		NOT_CLOSING}
 	statusSignal := make(chan int)
 
@@ -85,12 +85,18 @@ func (c *client) ConnID() int {
 }
 
 func (c *client) Read() ([]byte, error) {
-	select {
-	case data := <-c.dataBufferChan:
-		return data, nil
-	case err := <-c.closingSignal:
-		// fmt.Printf("[Client %v] Read Error\n", c.connectionId)
-		return nil, err
+	for {
+		select {
+		case data := <-c.dataBufferChan:
+			return data, nil
+		default:
+			// fmt.Printf("[Client %v] Read Error\n", c.connectionId)
+			// fmt.Printf("[Client %v] Connection Error: %v\n", c.connectionId, c.connectionError)
+			if c.connectionError != nil {
+				return nil, c.connectionError
+			}
+		}
+		time.Sleep(time.Microsecond)
 	}
 }
 
@@ -104,7 +110,9 @@ func (c *client) Write(payload []byte) error {
 }
 
 func (c *client) Close() error {
-	c.status = START_CLOSING
+	if c.status == NOT_CLOSING {
+		c.status = START_CLOSING
+	}
 	// fmt.Printf("[Client %v] Client Closing!\n", c.connectionId)
 
 	for {
@@ -140,6 +148,11 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 	for {
 		if c.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 && len(c.outMessageChan) == 0 {
+			c.status = HANDLER_CLOSED
+			return
+		}
+
+		if c.connectionError != nil {
 			c.status = HANDLER_CLOSED
 			return
 		}
@@ -198,7 +211,7 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 				outMessage, exists := c.outMessages[inMessage.SeqNum]
 				if exists {
-					if outMessage.Type == MsgConnect {
+					if outMessage.Type == MsgConnect && c.connectionId < 0 {
 						c.connectionId = inMessage.ConnID
 						statusSignal <- 0
 					}
@@ -212,9 +225,10 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 			if epochCount == params.EpochLimit {
 				// fmt.Printf("[Client %v] Epoch Limit!\n", c.connectionId)
-				c.closingSignal <- errors.New("Lost Connection!")
+				c.connectionError = errors.New("Lost Connection!")
 			} else {
 				if c.connectionId < 0 {
+					// fmt.Printf("Send Connect!\n")
 					connectMessage := NewConnect()
 					go WriteMessage(c.connection, nil, connectMessage)
 				} else {
