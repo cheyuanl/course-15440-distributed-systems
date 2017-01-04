@@ -2,7 +2,7 @@ package lsp
 
 import (
 	"encoding/json"
-	"fmt"
+	// "fmt"
 	"github.com/cmu440/lspnet"
 )
 
@@ -19,7 +19,7 @@ func ReadMessage(connection *lspnet.UDPConn) (*Message, *lspnet.UDPAddr, error) 
 	}
 
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		// fmt.Printf("Error: %v\n", err)
 	}
 
 	return nil, addr, err
@@ -37,7 +37,7 @@ func WriteMessage(connection *lspnet.UDPConn, addr *lspnet.UDPAddr, message *Mes
 	}
 
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		// fmt.Printf("Error: %v\n", err)
 	}
 
 	return err

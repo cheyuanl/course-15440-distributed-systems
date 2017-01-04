@@ -4,7 +4,7 @@ package lsp
 
 import (
 	"errors"
-	"fmt"
+	// "fmt"
 	"github.com/cmu440/lspnet"
 	"strconv"
 	"time"
@@ -33,7 +33,6 @@ type ClientInfo struct {
 	outMessages              map[int]*Message
 	outMessageChan           chan *Message
 	outMessageSequenceNumber int
-	epochSignal              chan int
 	receivedData             bool
 	dataBuffer               map[int][]byte
 	dataBufferSequenceNumber int
@@ -109,20 +108,22 @@ func (s *server) Close() error {
 			s.connection.Close()
 		}
 		if s.status == CONNECTION_CLOSED {
-			fmt.Printf("[Server] Server Closed!\n")
+			// fmt.Printf("[Server] Server Closed!\n")
 			return nil
 		}
-		time.Sleep(time.Microsecond)
+		time.Sleep(time.Millisecond)
 	}
 }
 
 func readHandlerForServer(s *server) {
 	for {
 		inMessage, clientAddr, err := ReadMessage(s.connection)
+		// fmt.Printf("[Server] Receive Message: %v\n", inMessage)
 		if err != nil {
+			// fmt.Printf("[Server] Read Error: %v\n", err)
 			if s.status == HANDLER_CLOSED {
 				s.status = CONNECTION_CLOSED
-				fmt.Printf("[Server] Connection Closed!\n")
+				// fmt.Printf("[Server] Connection Closed!\n")
 				return
 			}
 		} else {
@@ -133,14 +134,13 @@ func readHandlerForServer(s *server) {
 
 func eventLoopForServer(s *server, params *Params) {
 	connectionId := 1
-	timer := time.NewTimer(time.Duration(params.EpochMillis) * time.Millisecond)
 
 	for {
 		select {
 		case messageAndAddr := <-s.inMessagesChan:
 			inMessage := messageAndAddr.message
 			clientAddr := messageAndAddr.addr
-			// fmt.Printf("Client Request: %v\n", inMessage)
+			// fmt.Printf("[Server] Client %v Request: %v\n", inMessage.ConnID, inMessage)
 
 			switch inMessage.Type {
 			case MsgConnect:
@@ -154,7 +154,6 @@ func eventLoopForServer(s *server, params *Params) {
 					make(map[int]*Message),
 					make(chan *Message, 1000),
 					1,
-					make(chan int, 1000),
 					false,
 					make(map[int][]byte),
 					1}
@@ -167,33 +166,28 @@ func eventLoopForServer(s *server, params *Params) {
 				response := NewAck(client.connectionId, 0)
 				go WriteMessage(s.connection, clientAddr, response)
 			default:
-				client := s.clients[inMessage.ConnID]
-				client.inMessageChan <- inMessage
+				client, exists := s.clients[inMessage.ConnID]
+				if exists {
+					client.inMessageChan <- inMessage
+				}
 			}
 
 		case connectionId := <-s.clientClosedChan:
-			fmt.Printf("[Server] Client %v Closed!\n", connectionId)
+			// fmt.Printf("[Server] Client %v Closed!\n", connectionId)
 
 			delete(s.clients, connectionId)
 			if len(s.clients) == 0 && s.status == START_CLOSING {
-				fmt.Printf("[Server] All Clients Closed!\n")
+				// fmt.Printf("[Server] All Clients Closed!\n")
 				s.status = HANDLER_CLOSED
 				return
 			}
-
-		case <-timer.C:
-			// fmt.Printf("[Server] Epoch!\n")
-			for _, client := range s.clients {
-				client.epochSignal <- 1
-			}
-
-			timer.Reset(time.Duration(params.EpochMillis) * time.Millisecond)
 		}
 	}
 }
 
 func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 	epochCount := 0
+	timer := time.NewTimer(time.Duration(params.EpochMillis) * time.Millisecond)
 
 	for {
 		if s.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 && len(c.outMessageChan) == 0 {
@@ -210,11 +204,19 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 
 		select {
 		case inMessage := <-c.inMessageChan:
+			// fmt.Printf("[Server] New Message From Client %v\n", c.connectionId)
+
+			epochCount = 0
 			switch inMessage.Type {
 			case MsgData:
-				// fmt.Printf("New Data From Client %v with Seq %v!\n", c.connectionId, inMessage.SeqNum)
+				// fmt.Printf("[Server] New Data From Client %v with Seq %v!\n", c.connectionId, inMessage.SeqNum)
 
 				// save data into buffer
+				if inMessage.Size > len(inMessage.Payload) {
+					continue
+				}
+				inMessage.Payload = inMessage.Payload[0:inMessage.Size]
+
 				_, exists := c.dataBuffer[inMessage.SeqNum]
 				if !exists {
 					c.dataBuffer[inMessage.SeqNum] = inMessage.Payload
@@ -248,7 +250,7 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 				}
 			}
 
-		case <-c.epochSignal:
+		case <-timer.C:
 			// fmt.Printf("[Server-Client %v] Epoch!\n", c.connectionId)
 
 			epochCount += 1
@@ -268,6 +270,8 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 					go WriteMessage(s.connection, c.addr, outMessage)
 				}
 			}
+
+			timer.Reset(time.Duration(params.EpochMillis) * time.Millisecond)
 
 		default:
 			time.Sleep(time.Nanosecond)

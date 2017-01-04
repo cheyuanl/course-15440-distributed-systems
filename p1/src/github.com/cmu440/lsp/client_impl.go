@@ -4,7 +4,7 @@ package lsp
 
 import (
 	"errors"
-	"fmt"
+	// "fmt"
 	"github.com/cmu440/lspnet"
 	"time"
 )
@@ -89,13 +89,13 @@ func (c *client) Read() ([]byte, error) {
 	case data := <-c.dataBufferChan:
 		return data, nil
 	case err := <-c.closingSignal:
-		fmt.Printf("[Client %v] Read Error\n", c.connectionId)
+		// fmt.Printf("[Client %v] Read Error\n", c.connectionId)
 		return nil, err
 	}
 }
 
 func (c *client) Write(payload []byte) error {
-	// fmt.Printf("Write Data to Server\n")
+	// fmt.Printf("[Client %v] Write Data to Server!\n", c.connectionId)
 
 	message := NewData(c.connectionId, -1, len(payload), payload)
 	c.outMessageChan <- message
@@ -105,16 +105,17 @@ func (c *client) Write(payload []byte) error {
 
 func (c *client) Close() error {
 	c.status = START_CLOSING
+	// fmt.Printf("[Client %v] Client Closing!\n", c.connectionId)
 
 	for {
 		if c.status == HANDLER_CLOSED {
 			c.connection.Close()
 		}
 		if c.status == CONNECTION_CLOSED {
-			fmt.Printf("[Client %v] Client Closed!\n", c.connectionId)
+			// fmt.Printf("[Client %v] Client Closed!\n", c.connectionId)
 			return nil
 		}
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -155,12 +156,17 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 		select {
 		case inMessage := <-c.inMessages:
-			fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
+			// fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
 			epochCount = 0
 
 			switch inMessage.Type {
 			case MsgData:
 				// fmt.Printf("[Client %v] New Data From Server: %v %v!\n", c.connectionId, inMessage.SeqNum, c.dataBufferSequenceNumber)
+
+				if inMessage.Size > len(inMessage.Payload) {
+					continue
+				}
+				inMessage.Payload = inMessage.Payload[0:inMessage.Size]
 
 				// save data into buffer
 				_, exists := c.dataBuffer[inMessage.SeqNum]
