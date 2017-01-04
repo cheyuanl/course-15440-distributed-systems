@@ -3,19 +3,11 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 	"github.com/cmu440/lspnet"
 	"strconv"
 	"time"
-)
-
-type ServerStatus int
-
-const (
-	NOT_CLOSEING ServerStatus = iota
-	START_CLOSING
-	CLIENTS_CLOSED
-	CONNECTION_CLOSED
 )
 
 type server struct {
@@ -24,8 +16,9 @@ type server struct {
 	connection       *lspnet.UDPConn
 	inMessagesChan   chan *MessageAndAddr
 	dataBufferChan   chan *DataBufferElement
-	status           ServerStatus
+	status           Status
 	clientClosedChan chan int
+	clientLostChan   chan error
 }
 
 type MessageAndAddr struct {
@@ -73,8 +66,9 @@ func NewServer(port int, params *Params) (Server, error) {
 		conn,
 		make(chan *MessageAndAddr, 1000),
 		make(chan *DataBufferElement, 1000),
-		NOT_CLOSEING,
-		make(chan int, 1000)}
+		NOT_CLOSING,
+		make(chan int, 1000),
+		make(chan error, 1000)}
 
 	go readHandlerForServer(s)
 	go eventLoopForServer(s, params)
@@ -83,8 +77,12 @@ func NewServer(port int, params *Params) (Server, error) {
 }
 
 func (s *server) Read() (int, []byte, error) {
-	element := <-s.dataBufferChan
-	return element.connectionId, element.data, nil
+	select {
+	case element := <-s.dataBufferChan:
+		return element.connectionId, element.data, nil
+	case err := <-s.clientLostChan:
+		return -1, nil, err
+	}
 }
 
 func (s *server) Write(connID int, payload []byte) error {
@@ -107,14 +105,14 @@ func (s *server) Close() error {
 	s.status = START_CLOSING
 
 	for {
-		if s.status == CLIENTS_CLOSED {
+		if s.status == HANDLER_CLOSED {
 			s.connection.Close()
 		}
 		if s.status == CONNECTION_CLOSED {
 			fmt.Printf("[Server] Server Closed!\n")
 			return nil
 		}
-		time.Sleep(time.Second)
+		time.Sleep(time.Microsecond)
 	}
 }
 
@@ -122,7 +120,7 @@ func readHandlerForServer(s *server) {
 	for {
 		inMessage, clientAddr, err := ReadMessage(s.connection)
 		if err != nil {
-			if s.status == CLIENTS_CLOSED {
+			if s.status == HANDLER_CLOSED {
 				s.status = CONNECTION_CLOSED
 				fmt.Printf("[Server] Connection Closed!\n")
 				return
@@ -177,11 +175,12 @@ func eventLoopForServer(s *server, params *Params) {
 			fmt.Printf("[Server] Client %v Closed!\n", connectionId)
 
 			delete(s.clients, connectionId)
-			if len(s.clients) == 0 {
+			if len(s.clients) == 0 && s.status == START_CLOSING {
 				fmt.Printf("[Server] All Clients Closed!\n")
-				s.status = CLIENTS_CLOSED
+				s.status = HANDLER_CLOSED
 				return
 			}
+
 		case <-timer.C:
 			// fmt.Printf("[Server] Epoch!\n")
 			for _, client := range s.clients {
@@ -194,8 +193,10 @@ func eventLoopForServer(s *server, params *Params) {
 }
 
 func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
+	epochCount := 0
+
 	for {
-		if s.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 {
+		if s.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 && len(c.outMessageChan) == 0 {
 			s.clientClosedChan <- c.connectionId
 			return
 		}
@@ -250,13 +251,22 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 		case <-c.epochSignal:
 			// fmt.Printf("[Server-Client %v] Epoch!\n", c.connectionId)
 
-			if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
-				outMessage := NewAck(c.connectionId, 0)
-				go WriteMessage(s.connection, c.addr, outMessage)
-			}
-			for _, outMessage := range c.outMessages {
-				// fmt.Printf("[Server-Client %v] Resend Message from Server: %v %v\n", c.connectionId, outMessage.SeqNum, minUnAckedOutMessageSequenceNumber)
-				go WriteMessage(s.connection, c.addr, outMessage)
+			epochCount += 1
+
+			if epochCount == params.EpochLimit {
+				// fmt.Printf("[Client %v] Epoch Limit!\n", c.connectionId)
+				s.clientClosedChan <- c.connectionId
+				s.clientLostChan <- errors.New("Client Lost!\n")
+				return
+			} else {
+				if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
+					outMessage := NewAck(c.connectionId, 0)
+					go WriteMessage(s.connection, c.addr, outMessage)
+				}
+				for _, outMessage := range c.outMessages {
+					// fmt.Printf("[Server-Client %v] Resend Message from Server: %v %v\n", c.connectionId, outMessage.SeqNum, minUnAckedOutMessageSequenceNumber)
+					go WriteMessage(s.connection, c.addr, outMessage)
+				}
 			}
 
 		default:

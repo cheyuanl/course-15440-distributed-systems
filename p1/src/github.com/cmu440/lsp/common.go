@@ -42,3 +42,13 @@ func WriteMessage(connection *lspnet.UDPConn, addr *lspnet.UDPAddr, message *Mes
 
 	return err
 }
+
+type Status int
+
+const (
+	NOT_CLOSING Status = iota
+	START_CLOSING
+	HANDLER_CLOSED
+	CONNECTION_CLOSED
+	CLOSED
+)

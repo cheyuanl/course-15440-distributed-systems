@@ -21,6 +21,7 @@ type client struct {
 	dataBufferChan           chan []byte
 	dataBufferSequenceNumber int
 	closingSignal            chan error
+	status                   Status
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -56,7 +57,8 @@ func NewClient(hostport string, params *Params) (Client, error) {
 		make(map[int][]byte),
 		make(chan []byte, 1000),
 		1,
-		make(chan error, 1000)}
+		make(chan error, 1000),
+		NOT_CLOSING}
 	statusSignal := make(chan int)
 
 	// send connect message
@@ -102,7 +104,18 @@ func (c *client) Write(payload []byte) error {
 }
 
 func (c *client) Close() error {
-	return errors.New("not yet implemented")
+	c.status = START_CLOSING
+
+	for {
+		if c.status == HANDLER_CLOSED {
+			c.connection.Close()
+		}
+		if c.status == CONNECTION_CLOSED {
+			fmt.Printf("[Client %v] Client Closed!\n", c.connectionId)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func readHandlerForClient(c *client) {
@@ -111,7 +124,7 @@ func readHandlerForClient(c *client) {
 		if err != nil {
 			// fmt.Printf("[Client %v] Error: %v\n", c.connectionId, err)
 			if c.connectionId > 0 {
-				c.closingSignal <- err
+				c.status = CONNECTION_CLOSED
 				return
 			}
 		} else {
@@ -125,6 +138,11 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 	timer := time.NewTimer(time.Duration(params.EpochMillis) * time.Millisecond)
 
 	for {
+		if c.status == START_CLOSING && len(c.outMessages) == 0 && len(c.dataBuffer) == 0 && len(c.outMessageChan) == 0 {
+			c.status = HANDLER_CLOSED
+			return
+		}
+
 		minUnAckedOutMessageSequenceNumber := c.outMessageSequenceNumber
 		for sequenceNumber, _ := range c.outMessages {
 			if minUnAckedOutMessageSequenceNumber > sequenceNumber {
@@ -137,7 +155,7 @@ func eventLoopForClient(c *client, statusSignal chan int, params *Params) {
 
 		select {
 		case inMessage := <-c.inMessages:
-			// fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
+			fmt.Printf("[Client %v] Server Request: %v\n", c.connectionId, inMessage)
 			epochCount = 0
 
 			switch inMessage.Type {
