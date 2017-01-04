@@ -9,7 +9,6 @@ import (
 
 // Attempt to connect miner as a client to the server.
 func joinWithServer(hostport string) (lsp.Client, error) {
-	// TODO: implement this!
 
 	return nil, nil
 }

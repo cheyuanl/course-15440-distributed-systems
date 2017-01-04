@@ -1,22 +1,55 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 
+	"github.com/cmu440/bitcoin"
 	"github.com/cmu440/lsp"
 )
 
 type server struct {
 	lspServer lsp.Server
+	miners    []int
 }
 
 func startServer(port int) (*server, error) {
-	// TODO: implement this!
+	lspServer, err := lsp.NewServer(port, bitcoin.MakeParams(5, 2000, 1))
+	if err != nil {
+		return nil, err
+	}
 
-	return nil, nil
+	srv := &server{
+		lspServer,
+		make([]int, 0)}
+
+	return srv, nil
+}
+
+func getMessage(srv *server) (int, *bitcoin.Message, error) {
+	cid, payload, err := srv.lspServer.Read()
+	if err == nil {
+		var message bitcoin.Message
+		err = json.Unmarshal(payload, &message)
+		if err == nil {
+			return cid, &message, err
+		}
+	}
+
+	return cid, nil, err
+}
+
+func sendMessage(srv *server, cid int, message *bitcoin.Message) error {
+	var packet []byte
+	packet, err := json.Marshal(message)
+	if err == nil {
+		err = srv.lspServer.Write(cid, packet)
+	}
+
+	return err
 }
 
 var LOGF *log.Logger
@@ -59,5 +92,28 @@ func main() {
 
 	defer srv.lspServer.Close()
 
-	// TODO: implement this!
+	for {
+		cid, message, err := getMessage(srv)
+		if err == nil {
+			switch message.Type {
+			case bitcoin.Join:
+				srv.miners = append(srv.miners, cid)
+			case bitcoin.Request:
+				if len(srv.miners) > 0 {
+					data, lower, upper := message.Data, message.Lower, message.Upper
+					stride := (upper - lower) / uint64(len(srv.miners))
+					for i, miner := range srv.miners {
+						new_lower := lower + stride*uint64(i)
+						new_upper := lower + stride*uint64(i+1)
+						if new_upper > upper {
+							new_upper = upper
+						}
+						request := bitcoin.NewRequest(data, new_lower, new_upper)
+						sendMessage(srv, miner, request)
+					}
+				}
+			case bitcoin.Result:
+			}
+		}
+	}
 }
