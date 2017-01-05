@@ -34,7 +34,13 @@ func workOnJob(client lsp.Client, queryId int, data string, lower uint64, upper 
 	resultMessage.Lower = lower
 	resultMessage.Upper = upper
 	resultQueryWithMessage := &bitcoin.QueryWithMessage{queryId, *resultMessage}
-	bitcoin.SendMessage(client, resultQueryWithMessage)
+
+	err := bitcoin.SendMessage(client, resultQueryWithMessage)
+	if err != nil {
+		fmt.Printf("[Miner %v] Error: %v\n", client.ConnID(), err)
+	} else {
+		fmt.Printf("[Miner %v] Send Result Back to Server: %v, %v\n", client.ConnID(), minHash, nonce)
+	}
 }
 
 func main() {
@@ -49,6 +55,8 @@ func main() {
 	if err != nil {
 		fmt.Println("Failed to join with server:", err)
 		return
+	} else {
+		fmt.Println("Join Server!")
 	}
 
 	defer miner.Close()
@@ -61,9 +69,13 @@ func main() {
 			switch message.Type {
 			case bitcoin.Request:
 				data, lower, upper := message.Data, message.Lower, message.Upper
+				fmt.Printf("Get Request from Server: %v, %v, %v\n", data, lower, upper)
 				go workOnJob(miner, queryId, data, lower, upper)
 			default:
 			}
+		} else {
+			fmt.Printf("[Miner %v] Error: %v\n", miner.ConnID(), err)
+			break
 		}
 	}
 }

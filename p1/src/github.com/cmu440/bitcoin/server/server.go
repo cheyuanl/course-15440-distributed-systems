@@ -124,11 +124,12 @@ func main() {
 						if new_upper > upper {
 							new_upper = upper
 						}
-						request := &bitcoin.QueryWithMessage{queryId, *bitcoin.NewRequest(data, new_lower, new_upper)}
+						request := &bitcoin.QueryWithMessage{nextQueryId, *bitcoin.NewRequest(data, new_lower, new_upper)}
 						sendMessage(srv, miner, request)
 					}
 					srv.queryCount[strconv.Itoa(nextQueryId)] = 0
 					srv.queryClient[nextQueryId] = cid
+					srv.queryCount[strconv.Itoa(nextQueryId)+"_jobs"] = len(srv.miners)
 					nextQueryId += 1
 				}
 			case bitcoin.Result:
@@ -147,8 +148,9 @@ func main() {
 							srv.queryNonceResult[queryId] = minerNonce
 						}
 
-						minersCount := srv.queryCount[strconv.Itoa(queryId)+"_miners"]
+						minersCount := srv.queryCount[strconv.Itoa(queryId)+"_jobs"]
 						if count == minersCount {
+							fmt.Println("[Server] Send Result Back to Client!")
 							resultMessage := bitcoin.NewResult(srv.queryMinHashResult[queryId],
 								srv.queryNonceResult[queryId])
 							resultQueryWithMessage := &bitcoin.QueryWithMessage{queryId, *resultMessage}

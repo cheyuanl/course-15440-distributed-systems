@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/cmu440/bitcoin"
 	"github.com/cmu440/lsp"
 )
 
@@ -30,11 +31,25 @@ func main() {
 
 	defer client.Close()
 
-	_ = message  // Keep compiler happy. Please remove!
-	_ = maxNonce // Keep compiler happy. Please remove!
-	// TODO: implement this!
+	fmt.Printf("Message: %v\n", message)
+	fmt.Printf("maxNonce: %v\n", maxNonce)
 
-	printResult(0, 0)
+	// send request
+	requestMessage := bitcoin.NewRequest(message, 0, maxNonce)
+	requsetQueryWithMessage := &bitcoin.QueryWithMessage{0, *requestMessage}
+	err = bitcoin.SendMessage(client, requsetQueryWithMessage)
+	if err != nil {
+		printDisconnected()
+		return
+	}
+
+	resultQueryWithMessage, err := bitcoin.GetMessage(client)
+	if err != nil {
+		printDisconnected()
+		return
+	}
+	resultMessage := resultQueryWithMessage.Message
+	printResult(resultMessage.Hash, resultMessage.Nonce)
 }
 
 // printResult prints the final result to stdout.
