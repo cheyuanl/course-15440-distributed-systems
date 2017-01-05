@@ -69,7 +69,7 @@ var LOGF *log.Logger
 func main() {
 	// You may need a logger for debug purpose
 	const (
-		name = "log.txt"
+		name = "log_server.txt"
 		flag = os.O_RDWR | os.O_CREATE
 		perm = os.FileMode(0666)
 	)
@@ -100,7 +100,7 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
-	fmt.Println("Server listening on port", port)
+	LOGF.Println("Server listening on port", port)
 
 	defer srv.lspServer.Close()
 
@@ -150,7 +150,7 @@ func main() {
 
 						minersCount := srv.queryCount[strconv.Itoa(queryId)+"_jobs"]
 						if count == minersCount {
-							fmt.Println("[Server] Send Result Back to Client!")
+							LOGF.Println("[Server] Send Result Back to Client!")
 							resultMessage := bitcoin.NewResult(srv.queryMinHashResult[queryId],
 								srv.queryNonceResult[queryId])
 							resultQueryWithMessage := &bitcoin.QueryWithMessage{queryId, *resultMessage}

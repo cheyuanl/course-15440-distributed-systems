@@ -11,10 +11,10 @@ type QueryWithMessage struct {
 	Message Message
 }
 
-func GetMessage(client lsp.Client) (*QueryWithMessage, error) {
+func GetMessage(client lsp.Client) (*Message, error) {
 	payload, err := client.Read()
 	if err == nil {
-		var message QueryWithMessage
+		var message Message
 		err = json.Unmarshal(payload, &message)
 		if err == nil {
 			return &message, err
@@ -24,7 +24,7 @@ func GetMessage(client lsp.Client) (*QueryWithMessage, error) {
 	return nil, err
 }
 
-func SendMessage(client lsp.Client, message *QueryWithMessage) error {
+func SendMessage(client lsp.Client, message interface{}) error {
 	var packet []byte
 	packet, err := json.Marshal(message)
 	if err == nil {

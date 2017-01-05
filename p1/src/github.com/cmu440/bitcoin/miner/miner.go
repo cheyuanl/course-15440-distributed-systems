@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/cmu440/bitcoin"
@@ -44,6 +45,20 @@ func workOnJob(client lsp.Client, queryId int, data string, lower uint64, upper 
 }
 
 func main() {
+	const (
+		name = "log_miner.txt"
+		flag = os.O_RDWR | os.O_CREATE
+		perm = os.FileMode(0666)
+	)
+
+	file, err := os.OpenFile(name, flag, perm)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	LOGF := log.New(file, "", log.Lshortfile|log.Lmicroseconds)
+
 	const numArgs = 2
 	if len(os.Args) != numArgs {
 		fmt.Printf("Usage: ./%s <hostport>", os.Args[0])
@@ -69,12 +84,12 @@ func main() {
 			switch message.Type {
 			case bitcoin.Request:
 				data, lower, upper := message.Data, message.Lower, message.Upper
-				fmt.Printf("Get Request from Server: %v, %v, %v\n", data, lower, upper)
+				LOGF.Printf("Get Request from Server: %v, %v, %v\n", data, lower, upper)
 				go workOnJob(miner, queryId, data, lower, upper)
 			default:
 			}
 		} else {
-			fmt.Printf("[Miner %v] Error: %v\n", miner.ConnID(), err)
+			LOGF.Printf("[Miner %v] Error: %v\n", miner.ConnID(), err)
 			break
 		}
 	}

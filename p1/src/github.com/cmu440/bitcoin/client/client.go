@@ -29,26 +29,19 @@ func main() {
 		return
 	}
 
-	defer client.Close()
-
-	fmt.Printf("Message: %v\n", message)
-	fmt.Printf("maxNonce: %v\n", maxNonce)
-
 	// send request
 	requestMessage := bitcoin.NewRequest(message, 0, maxNonce)
-	requsetQueryWithMessage := &bitcoin.QueryWithMessage{0, *requestMessage}
-	err = bitcoin.SendMessage(client, requsetQueryWithMessage)
+	err = bitcoin.SendMessage(client, requestMessage)
 	if err != nil {
 		printDisconnected()
 		return
 	}
 
-	resultQueryWithMessage, err := bitcoin.GetMessage(client)
+	resultMessage, err := bitcoin.GetMessage(client)
 	if err != nil {
 		printDisconnected()
 		return
 	}
-	resultMessage := resultQueryWithMessage.Message
 	printResult(resultMessage.Hash, resultMessage.Nonce)
 }
 
