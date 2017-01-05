@@ -11,3 +11,8 @@ func MakeParams(epochLimit, epochMillis, windowSize int) *lsp.Params {
 		WindowSize:  windowSize,
 	}
 }
+
+type QueryWithMessage struct {
+	QueryId int
+	Message Message
+}

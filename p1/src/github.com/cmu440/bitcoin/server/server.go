@@ -12,8 +12,12 @@ import (
 )
 
 type server struct {
-	lspServer lsp.Server
-	miners    []int
+	lspServer          lsp.Server
+	miners             []int
+	queryMinHashResult map[int]uint64
+	queryNonceResult   map[int]uint64
+	queryCount         map[string]int
+	queryClient        map[int]int
 }
 
 func startServer(port int) (*server, error) {
@@ -24,15 +28,19 @@ func startServer(port int) (*server, error) {
 
 	srv := &server{
 		lspServer,
-		make([]int, 0)}
+		make([]int, 0),
+		make(map[int]uint64),
+		make(map[int]uint64),
+		make(map[string]int),
+		make(map[int]int)}
 
 	return srv, nil
 }
 
-func getMessage(srv *server) (int, *bitcoin.Message, error) {
+func getMessage(srv *server) (int, *bitcoin.QueryWithMessage, error) {
 	cid, payload, err := srv.lspServer.Read()
 	if err == nil {
-		var message bitcoin.Message
+		var message bitcoin.QueryWithMessage
 		err = json.Unmarshal(payload, &message)
 		if err == nil {
 			return cid, &message, err
@@ -42,7 +50,7 @@ func getMessage(srv *server) (int, *bitcoin.Message, error) {
 	return cid, nil, err
 }
 
-func sendMessage(srv *server, cid int, message *bitcoin.Message) error {
+func sendMessage(srv *server, cid int, message *bitcoin.QueryWithMessage) error {
 	var packet []byte
 	packet, err := json.Marshal(message)
 	if err == nil {
@@ -50,6 +58,10 @@ func sendMessage(srv *server, cid int, message *bitcoin.Message) error {
 	}
 
 	return err
+}
+
+func getQueryKey(queryId int, lower, upper uint64) string {
+	return strconv.Itoa(queryId) + "$" + strconv.FormatUint(lower, 10) + "$" + strconv.FormatUint(upper, 10)
 }
 
 var LOGF *log.Logger
@@ -92,9 +104,13 @@ func main() {
 
 	defer srv.lspServer.Close()
 
+	nextQueryId := 1
+
 	for {
-		cid, message, err := getMessage(srv)
+		cid, queryWithMessage, err := getMessage(srv)
 		if err == nil {
+			queryId, message := queryWithMessage.QueryId, queryWithMessage.Message
+
 			switch message.Type {
 			case bitcoin.Join:
 				srv.miners = append(srv.miners, cid)
@@ -108,11 +124,38 @@ func main() {
 						if new_upper > upper {
 							new_upper = upper
 						}
-						request := bitcoin.NewRequest(data, new_lower, new_upper)
+						request := &bitcoin.QueryWithMessage{queryId, *bitcoin.NewRequest(data, new_lower, new_upper)}
 						sendMessage(srv, miner, request)
 					}
+					srv.queryCount[strconv.Itoa(nextQueryId)] = 0
+					srv.queryClient[nextQueryId] = cid
+					nextQueryId += 1
 				}
 			case bitcoin.Result:
+				count, exists := srv.queryCount[strconv.Itoa(queryId)]
+				if exists {
+					lower, upper := message.Lower, message.Upper
+					_, exists = srv.queryCount[getQueryKey(queryId, lower, upper)]
+					if !exists {
+						count += 1
+						srv.queryCount[strconv.Itoa(queryId)] = count
+
+						serverHash := srv.queryMinHashResult[queryId]
+						minerHash, minerNonce := message.Hash, message.Nonce
+						if serverHash < minerHash {
+							srv.queryMinHashResult[queryId] = minerHash
+							srv.queryNonceResult[queryId] = minerNonce
+						}
+
+						minersCount := srv.queryCount[strconv.Itoa(queryId)+"_miners"]
+						if count == minersCount {
+							resultMessage := bitcoin.NewResult(srv.queryMinHashResult[queryId],
+								srv.queryNonceResult[queryId])
+							resultQueryWithMessage := &bitcoin.QueryWithMessage{queryId, *resultMessage}
+							sendMessage(srv, srv.queryClient[queryId], resultQueryWithMessage)
+						}
+					}
+				}
 			}
 		}
 	}

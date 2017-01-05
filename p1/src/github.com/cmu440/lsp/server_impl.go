@@ -18,12 +18,17 @@ type server struct {
 	dataBufferChan   chan *DataBufferElement
 	status           Status
 	clientClosedChan chan int
-	clientLostChan   chan error
+	clientLostChan   chan *ClientLost
 }
 
 type MessageAndAddr struct {
 	message *Message
 	addr    *lspnet.UDPAddr
+}
+
+type ClientLost struct {
+	connectionId int
+	err          error
 }
 
 type ClientInfo struct {
@@ -68,7 +73,7 @@ func NewServer(port int, params *Params) (Server, error) {
 		make(chan *DataBufferElement, 10000),
 		NOT_CLOSING,
 		make(chan int, 1000),
-		make(chan error, 1000)}
+		make(chan *ClientLost, 1000)}
 
 	go readHandlerForServer(s)
 	go eventLoopForServer(s, params)
@@ -80,8 +85,8 @@ func (s *server) Read() (int, []byte, error) {
 	select {
 	case element := <-s.dataBufferChan:
 		return element.connectionId, element.data, nil
-	case err := <-s.clientLostChan:
-		return -1, nil, err
+	case lost := <-s.clientLostChan:
+		return lost.connectionId, nil, lost.err
 	}
 }
 
@@ -282,7 +287,7 @@ func writeHandlerForClient(s *server, c *ClientInfo, params *Params) {
 			if epochCount == params.EpochLimit {
 				// fmt.Printf("[Client %v] Epoch Limit!\n", c.connectionId)
 				s.clientClosedChan <- c.connectionId
-				s.clientLostChan <- errors.New("Client Lost!\n")
+				s.clientLostChan <- &ClientLost{c.connectionId, errors.New("Client Lost!\n")}
 				return
 			} else {
 				if c.dataBufferSequenceNumber == 1 && len(c.dataBuffer) == 0 {
