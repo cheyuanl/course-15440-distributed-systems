@@ -21,7 +21,7 @@ type server struct {
 }
 
 func startServer(port int) (*server, error) {
-	lspServer, err := lsp.NewServer(port, bitcoin.MakeParams(5, 2000, 1))
+	lspServer, err := lsp.NewServer(port, lsp.NewParams())
 	if err != nil {
 		return nil, err
 	}
