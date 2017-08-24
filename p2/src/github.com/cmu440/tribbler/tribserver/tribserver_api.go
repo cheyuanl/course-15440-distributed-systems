@@ -12,12 +12,12 @@ type TribServer interface {
 	CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error
 
 	// AddSubscription adds TargerUserID to UserID's list of subscriptions.
-	// Replies with status NoSuchUser if the specified UserID does not exist, and NoSuchTargerUser
+	// Replies with status NoSuchUser if the specified UserID does not exist, and NoSuchTargetUser
 	// if the specified TargerUserID does not exist.
 	AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error
 
 	// RemoveSubscription removes TargerUserID to UserID's list of subscriptions.
-	// Replies with status NoSuchUser if the specified UserID does not exist, and NoSuchTargerUser
+	// Replies with status NoSuchUser if the specified UserID does not exist, and NoSuchTargetUser
 	// if the specified TargerUserID does not exist.
 	RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error
 

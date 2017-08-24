@@ -44,7 +44,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		ss.numNodes = numNodes
 
 		// rpc service
-		rpc.Register(storagerpc.Wrap(ss))
+		rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
 		rpc.HandleHTTP()
 		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {

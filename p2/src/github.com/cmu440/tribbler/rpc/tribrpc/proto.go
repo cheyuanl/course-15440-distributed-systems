@@ -24,6 +24,20 @@ type Tribble struct {
 	Contents string    // The text/contents of the tribble message.
 }
 
+type Tribbles []Tribble
+
+func (slice Tribbles) Len() int {
+	return len(slice)
+}
+
+func (slice Tribbles) Less(i, j int) bool {
+	return slice[i].Posted.Unix() > slice[j].Posted.Unix()
+}
+
+func (slice Tribbles) Swap(i, j int) {
+	slice[i], slice[j] = slice[j], slice[i]
+}
+
 type CreateUserArgs struct {
 	UserID string
 }

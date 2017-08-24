@@ -8,11 +8,10 @@ import (
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
-
 type libstore struct {
-	ssClient *rpc.Client
+	ssClient  *rpc.Client
 	myAddress string
-	mode LeaseMode
+	mode      LeaseMode
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -59,6 +58,7 @@ func (ls *libstore) Get(key string) (string, error) {
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetReply
 	err := ls.ssClient.Call("StorageServer.Get", args, &reply)
+
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("Get Reply Status Error: %v", reply.Status))
 	}
@@ -69,6 +69,7 @@ func (ls *libstore) Put(key, value string) error {
 	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
 	err := ls.ssClient.Call("StorageServer.Put", args, &reply)
+
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("Put Reply Status Error: %v", reply.Status))
 	}
@@ -90,6 +91,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetListReply
 	err := ls.ssClient.Call("StorageServer.GetList", args, &reply)
+
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("GetList Reply Status Error: %v", reply.Status))
 	}
@@ -100,6 +102,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
 	err := ls.ssClient.Call("StorageServer.RemoveFromList", args, &reply)
+
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("RemoveFromList Reply Status Error: %v", reply.Status))
 	}
@@ -110,6 +113,7 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
 	err := ls.ssClient.Call("StorageServer.AppendToList", args, &reply)
+
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("AppendToList Reply Status Error: %v", reply.Status))
 	}
