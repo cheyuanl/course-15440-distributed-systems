@@ -50,3 +50,17 @@ func StoreHash(key string) uint32 {
 	hasher.Write([]byte(prefix))
 	return hasher.Sum32()
 }
+
+func GetServerForKey(servers []storagerpc.Node, key string) storagerpc.Node {
+	hashID := StoreHash(key)
+	if servers[len(servers)-1].NodeID < hashID {
+		return servers[0]
+	} else {
+		for _, server := range servers {
+			if server.NodeID > hashID {
+				return server
+			}
+		}
+	}
+	return storagerpc.Node{}
+}

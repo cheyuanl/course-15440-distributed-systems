@@ -2,19 +2,35 @@ package storageserver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+type Nodes []storagerpc.Node
+
+func (slice Nodes) Len() int {
+	return len(slice)
+}
+
+func (slice Nodes) Less(i, j int) bool {
+	return slice[i].NodeID < slice[j].NodeID
+}
+
+func (slice Nodes) Swap(i, j int) {
+	slice[i], slice[j] = slice[j], slice[i]
+}
+
 type storageServer struct {
-	servers      []storagerpc.Node
+	servers      Nodes
 	serversMutex sync.Mutex
 
 	data      map[string]string
@@ -33,25 +49,48 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	if len(masterServerHostPort) > 0 {
-		// TODO
-	} else {
-		// master
-		ss := new(storageServer)
-		ss.data = make(map[string]string)
-		ss.node = storagerpc.Node{fmt.Sprintf(":%d", port), nodeID}
-		ss.servers = []storagerpc.Node{ss.node}
-		ss.numNodes = numNodes
+	ss := new(storageServer)
+	ss.data = make(map[string]string)
+	hostname, err := os.Hostname()
+	if err != nil {
+		return nil, err
+	}
+	ss.node = storagerpc.Node{fmt.Sprintf("%s:%d", hostname, port), nodeID}
+	ss.numNodes = numNodes
+	ss.servers = Nodes{ss.node}
 
-		// rpc service
-		rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
-		rpc.HandleHTTP()
-		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	// start rpc service
+	rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
+	rpc.HandleHTTP()
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, err
+	}
+	go http.Serve(l, nil)
+
+	if len(masterServerHostPort) > 0 {
+		// connect to the master
+		var ssClient *rpc.Client
+		ssClient, err = rpc.DialHTTP("tcp", masterServerHostPort)
 		if err != nil {
 			return nil, err
 		}
-		go http.Serve(l, nil)
 
+		// keep registering until the master returns OK
+		args := &storagerpc.RegisterArgs{ServerInfo: ss.node}
+		var reply storagerpc.RegisterReply
+		for {
+			err = ssClient.Call("StorageServer.Get", args, &reply)
+			if err != nil {
+				return nil, err
+			}
+			if reply.Status == storagerpc.OK {
+				ss.servers = reply.Servers
+				break
+			}
+			time.Sleep(1000 * time.Millisecond)
+		}
+	} else {
 		if numNodes > 1 {
 			for {
 				ss.serversMutex.Lock()
@@ -63,10 +102,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 				time.Sleep(1000 * time.Millisecond)
 			}
 		}
-		return ss, nil
 	}
 
-	return nil, errors.New("not implemented")
+	return ss, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
@@ -87,6 +125,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	}
 	ss.servers = append(ss.servers, args.ServerInfo)
 	if len(ss.servers) == ss.numNodes {
+		sort.Sort(ss.servers)
 		reply.Status = storagerpc.OK
 		reply.Servers = ss.servers
 	} else {
@@ -110,9 +149,19 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 	return nil
 }
 
+func (ss *storageServer) checkKeyInRange(key string) bool {
+	server := libstore.GetServerForKey(ss.servers, key)
+	return server == ss.node
+}
+
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
+
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
 
 	value, exists := ss.data[args.Key]
 	if exists {
@@ -129,6 +178,11 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
 
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
 	_, exists := ss.data[args.Key]
 	if exists {
 		delete(ss.data, args.Key)
@@ -143,6 +197,11 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
+
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
 
 	rawValue, exists := ss.data[args.Key]
 	if exists {
@@ -161,6 +220,11 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
 
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
+
 	ss.data[args.Key] = args.Value
 	reply.Status = storagerpc.OK
 
@@ -170,6 +234,11 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
+
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
 
 	rawValue, exists := ss.data[args.Key]
 	var list []string
@@ -196,6 +265,11 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	ss.dataMutex.Lock()
 	defer ss.dataMutex.Unlock()
+
+	if !ss.checkKeyInRange(args.Key) {
+		reply.Status = storagerpc.WrongServer
+		return nil
+	}
 
 	rawValue, exists := ss.data[args.Key]
 	if exists {

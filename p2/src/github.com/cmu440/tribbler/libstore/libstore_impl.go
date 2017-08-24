@@ -4,14 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"net/rpc"
+	"time"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
 type libstore struct {
-	ssClient  *rpc.Client
 	myAddress string
 	mode      LeaseMode
+
+	ssClient  *rpc.Client
+	ssServers []storagerpc.Node
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -46,6 +49,20 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		return nil, err
 	}
 	ls.ssClient = ssClient
+
+	for {
+		args := &storagerpc.GetServersArgs{}
+		var reply storagerpc.GetServersReply
+		err = ls.ssClient.Call("StorageServer.GetServers", args, &reply)
+		if err != nil {
+			return nil, err
+		}
+		if reply.Status == storagerpc.OK {
+			ls.ssServers = reply.Servers
+			break
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
 
 	ls.myAddress = myHostPort
 	ls.mode = mode
