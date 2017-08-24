@@ -18,6 +18,20 @@ type tribServer struct {
 	libstore libstore.Libstore
 }
 
+type Tribbles []tribrpc.Tribble
+
+func (slice Tribbles) Len() int {
+	return len(slice)
+}
+
+func (slice Tribbles) Less(i, j int) bool {
+	return slice[i].Posted.UnixNano() > slice[j].Posted.UnixNano()
+}
+
+func (slice Tribbles) Swap(i, j int) {
+	slice[i], slice[j] = slice[j], slice[i]
+}
+
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
 // is the master storage server's host:port and port is this port number on which
 // the TribServer should listen. A non-nil error should be returned if the TribServer
@@ -202,18 +216,19 @@ func (ts *tribServer) GetTribblesOfUser(userID string) []tribrpc.Tribble {
 	if err != nil {
 		return []tribrpc.Tribble{}
 	}
-	if len(tribKeys) > MAX_TRIBBLES_COUNT {
-		tribKeys = tribKeys[len(tribKeys)-MAX_TRIBBLES_COUNT:]
-	}
 
 	// reverse
-	var tribs = []tribrpc.Tribble{}
-	for i := len(tribKeys) - 1; i >= 0; i-- {
-		tribKey := tribKeys[i]
-		postTime := time.Unix(util.GetPostTime(userID, tribKey), 0)
+	var tribs = Tribbles{}
+	for _, tribKey := range tribKeys {
+		postTime := time.Unix(0, util.GetPostTime(userID, tribKey))
 		var contents string
 		contents, _ = ts.libstore.Get(tribKey)
 		tribs = append(tribs, tribrpc.Tribble{userID, postTime, contents})
+	}
+
+	sort.Sort(tribs)
+	if len(tribs) > MAX_TRIBBLES_COUNT {
+		tribs = tribs[:MAX_TRIBBLES_COUNT]
 	}
 
 	return tribs
@@ -246,7 +261,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 		return nil
 	}
 
-	tribs := tribrpc.Tribbles{}
+	tribs := Tribbles{}
 	for _, user := range users {
 		tribs = append(tribs, ts.GetTribblesOfUser(user)...)
 	}
