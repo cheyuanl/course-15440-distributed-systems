@@ -358,16 +358,25 @@ func LeftTime(timestamp int64) time.Duration {
 }
 
 func (ss *storageServer) RevokeLeases(key string) error {
+	for {
+		ss.leasesRevokingMutex.Lock()
+		status, exists := ss.leasesRevoking[key]
+		if exists && status {
+			ss.leasesRevokingMutex.Unlock()
+			time.Sleep(1000 * time.Millisecond)
+		} else {
+			ss.leasesRevoking[key] = true
+			ss.leasesRevokingMutex.Unlock()
+			break
+		}
+	}
+
 	ss.leasesMutex.Lock()
 	holders, exists := ss.leases[key]
 	ss.leasesMutex.Unlock()
 	if exists {
 		size := len(holders)
 		doneChan := make(chan bool, size)
-
-		ss.leasesRevokingMutex.Lock()
-		ss.leasesRevoking[key] = true
-		ss.leasesRevokingMutex.Unlock()
 
 		for holderAddress, timestamp := range holders {
 			go func() {
@@ -382,6 +391,7 @@ func (ss *storageServer) RevokeLeases(key string) error {
 							holderClient.Call("LeaseCallbacks.RevokeLease", args, &reply)
 							if reply.Status == storagerpc.OK {
 								revokeLeaseChan <- true
+								break
 							}
 						}
 					}()
@@ -402,11 +412,11 @@ func (ss *storageServer) RevokeLeases(key string) error {
 		ss.leasesMutex.Lock()
 		delete(ss.leases, key)
 		ss.leasesMutex.Unlock()
-
-		ss.leasesRevokingMutex.Lock()
-		ss.leasesRevoking[key] = false
-		ss.leasesRevokingMutex.Unlock()
 	}
+
+	ss.leasesRevokingMutex.Lock()
+	ss.leasesRevoking[key] = false
+	ss.leasesRevokingMutex.Unlock()
 
 	return nil
 }
