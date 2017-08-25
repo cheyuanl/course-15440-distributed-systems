@@ -6,6 +6,7 @@ import (
 	"net/rpc"
 	"time"
 
+	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
@@ -43,6 +44,8 @@ type libstore struct {
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
 	ls := new(libstore)
+
+	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls))
 
 	ssClient, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {

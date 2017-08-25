@@ -38,6 +38,11 @@ type storageServer struct {
 
 	node     storagerpc.Node
 	numNodes int
+
+	leases              map[string](map[string]int64)
+	leasesMutex         sync.Mutex
+	leasesRevoking      map[string]bool
+	leasesRevokingMutex sync.Mutex
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -58,6 +63,8 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	ss.node = storagerpc.Node{fmt.Sprintf("%s:%d", hostname, port), nodeID}
 	ss.numNodes = numNodes
 	ss.servers = Nodes{ss.node}
+	ss.leases = make(map[string](map[string]int64))
+	ss.leasesRevoking = make(map[string]bool)
 
 	// start rpc service
 	rpc.RegisterName("StorageServer", storagerpc.Wrap(ss))
@@ -149,24 +156,22 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 	return nil
 }
 
-func (ss *storageServer) checkKeyInRange(key string) bool {
-	server := libstore.GetServerForKey(ss.servers, key)
-	return server == ss.node
-}
-
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
 
+	ss.dataMutex.Lock()
 	value, exists := ss.data[args.Key]
+	ss.dataMutex.Unlock()
+
 	if exists {
 		reply.Status = storagerpc.OK
 		reply.Value = value
+		if args.WantLease {
+			reply.Lease = ss.GrantLease(args.Key, args.HostPort)
+		}
 	} else {
 		reply.Status = storagerpc.KeyNotFound
 	}
@@ -175,14 +180,12 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
 
+	ss.dataMutex.Lock()
 	_, exists := ss.data[args.Key]
 	if exists {
 		delete(ss.data, args.Key)
@@ -190,25 +193,37 @@ func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.D
 	} else {
 		reply.Status = storagerpc.KeyNotFound
 	}
+	ss.dataMutex.Unlock()
+
+	if reply.Status == storagerpc.OK {
+		err := ss.RevokeLeases(args.Key)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
 
+	ss.dataMutex.Lock()
 	rawValue, exists := ss.data[args.Key]
+	ss.dataMutex.Unlock()
+
 	if exists {
 		var list []string
 		json.Unmarshal([]byte(rawValue), &list)
 		reply.Status = storagerpc.OK
 		reply.Value = list
+
+		if args.WantLease {
+			reply.Lease = ss.GrantLease(args.Key, args.HostPort)
+		}
 	} else {
 		reply.Status = storagerpc.KeyNotFound
 	}
@@ -217,28 +232,39 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
 
+	err := ss.RevokeLeases(args.Key)
+	if err != nil {
+		return err
+	}
+
+	ss.dataMutex.Lock()
+	defer ss.dataMutex.Unlock()
+
 	ss.data[args.Key] = args.Value
+
 	reply.Status = storagerpc.OK
 
 	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
+
+	err := ss.RevokeLeases(args.Key)
+	if err != nil {
+		return err
+	}
+
+	ss.dataMutex.Lock()
+	defer ss.dataMutex.Unlock()
 
 	rawValue, exists := ss.data[args.Key]
 	var list []string
@@ -247,7 +273,6 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		for _, item := range list {
 			if item == args.Value {
 				reply.Status = storagerpc.ItemExists
-
 				return nil
 			}
 		}
@@ -257,20 +282,25 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	}
 	newByteValue, _ := json.Marshal(list)
 	ss.data[args.Key] = string(newByteValue)
+
 	reply.Status = storagerpc.OK
 
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	ss.dataMutex.Lock()
-	defer ss.dataMutex.Unlock()
-
-	if !ss.checkKeyInRange(args.Key) {
+	if !ss.CheckKeyInRange(args.Key) {
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
 
+	err := ss.RevokeLeases(args.Key)
+	if err != nil {
+		return err
+	}
+
+	ss.dataMutex.Lock()
+	defer ss.dataMutex.Unlock()
 	rawValue, exists := ss.data[args.Key]
 	if exists {
 		var list []string
@@ -290,6 +320,93 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	}
 
 	reply.Status = storagerpc.ItemNotFound
+
+	return nil
+}
+
+func (ss *storageServer) CheckKeyInRange(key string) bool {
+	server := libstore.GetServerForKey(ss.servers, key)
+	return server == ss.node
+}
+
+func (ss *storageServer) GrantLease(key string, hostPort string) storagerpc.Lease {
+	ss.leasesRevokingMutex.Lock()
+	status, exists := ss.leasesRevoking[key]
+	ss.leasesRevokingMutex.Unlock()
+	if exists && status {
+		return storagerpc.Lease{false, 0}
+	}
+
+	ss.leasesMutex.Lock()
+	defer ss.leasesMutex.Unlock()
+	_, leaseExists := ss.leases[key]
+	if !leaseExists {
+		ss.leases[key] = make(map[string]int64)
+	}
+	ss.leases[key][hostPort] = time.Now().Unix()
+	return storagerpc.Lease{true, storagerpc.LeaseSeconds}
+}
+
+func IsExpired(timestamp int64) bool {
+	timeElapsed := time.Since(time.Unix(timestamp, 0))
+	return timeElapsed.Seconds() >= storagerpc.LeaseSeconds+storagerpc.LeaseGuardSeconds
+}
+
+func LeftTime(timestamp int64) time.Duration {
+	expiredTime := time.Unix(timestamp, 0).Add((storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds) * time.Second)
+	return expiredTime.Sub(time.Now())
+}
+
+func (ss *storageServer) RevokeLeases(key string) error {
+	ss.leasesMutex.Lock()
+	holders, exists := ss.leases[key]
+	ss.leasesMutex.Unlock()
+	if exists {
+		size := len(holders)
+		doneChan := make(chan bool, size)
+
+		ss.leasesRevokingMutex.Lock()
+		ss.leasesRevoking[key] = true
+		ss.leasesRevokingMutex.Unlock()
+
+		for holderAddress, timestamp := range holders {
+			go func() {
+				holderClient, _ := rpc.DialHTTP("tcp", holderAddress)
+				if !IsExpired(timestamp) {
+					revokeLeaseChan := make(chan bool, 1)
+					leftTime := LeftTime(timestamp)
+					go func() {
+						for {
+							args := &storagerpc.RevokeLeaseArgs{Key: key}
+							var reply storagerpc.RevokeLeaseReply
+							holderClient.Call("LeaseCallbacks.RevokeLease", args, &reply)
+							if reply.Status == storagerpc.OK {
+								revokeLeaseChan <- true
+							}
+						}
+					}()
+					select {
+					case <-revokeLeaseChan:
+					case <-time.After(leftTime):
+						break
+					}
+				}
+				doneChan <- true
+			}()
+		}
+
+		for i := 0; i < size; i++ {
+			<-doneChan
+		}
+
+		ss.leasesMutex.Lock()
+		delete(ss.leases, key)
+		ss.leasesMutex.Unlock()
+
+		ss.leasesRevokingMutex.Lock()
+		ss.leasesRevoking[key] = false
+		ss.leasesRevokingMutex.Unlock()
+	}
 
 	return nil
 }
