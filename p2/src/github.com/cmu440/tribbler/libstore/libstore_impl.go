@@ -4,18 +4,37 @@ import (
 	"errors"
 	"fmt"
 	"net/rpc"
+	"sync"
 	"time"
 
 	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+type StringEntry struct {
+	value       string
+	expiredTime time.Time
+}
+
+type ListEntry struct {
+	value       []string
+	expiredTime time.Time
+}
+
 type libstore struct {
 	myAddress string
-	mode      LeaseMode
+	leaseMode LeaseMode
 
 	ssClient  *rpc.Client
 	ssServers []storagerpc.Node
+
+	stringCache      map[string]StringEntry
+	stringCacheMutex sync.Mutex
+	listCache        map[string]ListEntry
+	listCacheMutex   sync.Mutex
+
+	queryCount      map[string]int
+	queryCountMutex sync.Mutex
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -64,17 +83,32 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 			ls.ssServers = reply.Servers
 			break
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	ls.myAddress = myHostPort
-	ls.mode = mode
+	ls.leaseMode = mode
+	ls.stringCache = make(map[string]StringEntry)
+	ls.listCache = make(map[string]ListEntry)
+	ls.queryCount = make(map[string]int)
 
 	return ls, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	wantLease := false
+	ls.stringCacheMutex.Lock()
+	value, exists := ls.stringCache[key]
+	if exists {
+		if value.expiredTime.After(time.Now()) {
+			ls.stringCacheMutex.Unlock()
+			return value.value, nil
+		} else {
+			delete(ls.stringCache, key)
+		}
+	}
+	ls.stringCacheMutex.Unlock()
+
+	wantLease := ls.GetWantLease(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetReply
 	err := ls.ssClient.Call("StorageServer.Get", args, &reply)
@@ -82,6 +116,23 @@ func (ls *libstore) Get(key string) (string, error) {
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("Get Reply Status Error: %v", reply.Status))
 	}
+
+	// save into cache
+	ls.stringCacheMutex.Lock()
+	ls.stringCache[key] = StringEntry{reply.Value, time.Now().Add(time.Duration(reply.Lease.ValidSeconds) * time.Second)}
+	ls.stringCacheMutex.Unlock()
+	go func() {
+		time.Sleep(time.Duration(reply.Lease.ValidSeconds) * time.Second)
+		ls.listCacheMutex.Lock()
+		value, exists := ls.stringCache[key]
+		if exists && value.expiredTime.Before(time.Now()) {
+			delete(ls.stringCache, key)
+		}
+		ls.listCacheMutex.Unlock()
+	}()
+
+	ls.UpdateQueryCount(key)
+
 	return reply.Value, err
 }
 
@@ -107,7 +158,19 @@ func (ls *libstore) Delete(key string) error {
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	wantLease := false
+	ls.listCacheMutex.Lock()
+	value, exists := ls.listCache[key]
+	if exists {
+		if value.expiredTime.After(time.Now()) {
+			ls.stringCacheMutex.Unlock()
+			return value.value, nil
+		} else {
+			delete(ls.listCache, key)
+		}
+	}
+	ls.listCacheMutex.Unlock()
+
+	wantLease := ls.GetWantLease(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetListReply
 	err := ls.ssClient.Call("StorageServer.GetList", args, &reply)
@@ -115,6 +178,23 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("GetList Reply Status Error: %v", reply.Status))
 	}
+
+	// save into cache
+	ls.listCacheMutex.Lock()
+	ls.listCache[key] = ListEntry{reply.Value, time.Now().Add(time.Duration(reply.Lease.ValidSeconds) * time.Second)}
+	ls.listCacheMutex.Unlock()
+	go func() {
+		time.Sleep(time.Duration(reply.Lease.ValidSeconds) * time.Second)
+		ls.listCacheMutex.Lock()
+		value, exists := ls.listCache[key]
+		if exists && value.expiredTime.Before(time.Now()) {
+			delete(ls.listCache, key)
+		}
+		ls.listCacheMutex.Unlock()
+	}()
+
+	ls.UpdateQueryCount(key)
+
 	return reply.Value, err
 }
 
@@ -142,4 +222,42 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
 	return errors.New("not implemented")
+}
+
+func (ls *libstore) GetWantLease(key string) bool {
+	var wantLease bool
+	if ls.leaseMode == Never {
+		wantLease = false
+	} else if ls.leaseMode == Always {
+		wantLease = true
+	} else if ls.leaseMode == Normal {
+		ls.queryCountMutex.Lock()
+		count, exists := ls.queryCount[key]
+		ls.queryCountMutex.Unlock()
+
+		if exists && count >= storagerpc.QueryCacheThresh {
+			wantLease = true
+		} else {
+			wantLease = false
+		}
+	}
+
+	return wantLease
+}
+
+func (ls *libstore) UpdateQueryCount(key string) {
+	ls.queryCountMutex.Lock()
+	count, exists := ls.queryCount[key]
+	if exists {
+		ls.queryCount[key] = count + 1
+	} else {
+		ls.queryCount[key] = 1
+	}
+	ls.queryCountMutex.Unlock()
+	go func() {
+		time.Sleep(storagerpc.QueryCacheSeconds * time.Second)
+		ls.queryCountMutex.Lock()
+		count, _ = ls.queryCount[key]
+		ls.queryCount[key] = count - 1
+	}()
 }
