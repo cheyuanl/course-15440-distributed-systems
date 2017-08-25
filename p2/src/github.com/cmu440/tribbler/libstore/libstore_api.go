@@ -57,7 +57,7 @@ func GetServerForKey(servers []storagerpc.Node, key string) storagerpc.Node {
 		return servers[0]
 	} else {
 		for _, server := range servers {
-			if server.NodeID > hashID {
+			if server.NodeID >= hashID {
 				return server
 			}
 		}

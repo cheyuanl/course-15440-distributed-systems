@@ -87,7 +87,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		args := &storagerpc.RegisterArgs{ServerInfo: ss.node}
 		var reply storagerpc.RegisterReply
 		for {
-			err = ssClient.Call("StorageServer.Get", args, &reply)
+			err = ssClient.Call("StorageServer.RegisterServer", args, &reply)
 			if err != nil {
 				return nil, err
 			}
@@ -95,7 +95,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 				ss.servers = reply.Servers
 				break
 			}
-			time.Sleep(1000 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	} else {
 		if numNodes > 1 {
@@ -106,7 +106,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 					break
 				}
 				ss.serversMutex.Unlock()
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
