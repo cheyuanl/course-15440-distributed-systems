@@ -123,14 +123,13 @@ func (ls *libstore) Get(key string) (string, error) {
 	ls.stringCacheMutex.Unlock()
 	go func() {
 		time.Sleep(time.Duration(reply.Lease.ValidSeconds) * time.Second)
-		ls.listCacheMutex.Lock()
+		ls.stringCacheMutex.Lock()
 		value, exists := ls.stringCache[key]
 		if exists && value.expiredTime.Before(time.Now()) {
 			delete(ls.stringCache, key)
 		}
-		ls.listCacheMutex.Unlock()
+		ls.stringCacheMutex.Unlock()
 	}()
-
 	ls.UpdateQueryCount(key)
 
 	return reply.Value, err
@@ -162,7 +161,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	value, exists := ls.listCache[key]
 	if exists {
 		if value.expiredTime.After(time.Now()) {
-			ls.stringCacheMutex.Unlock()
+			ls.listCacheMutex.Unlock()
 			return value.value, nil
 		} else {
 			delete(ls.listCache, key)
@@ -192,7 +191,6 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		}
 		ls.listCacheMutex.Unlock()
 	}()
-
 	ls.UpdateQueryCount(key)
 
 	return reply.Value, err
@@ -221,7 +219,17 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
+	ls.stringCacheMutex.Lock()
+	delete(ls.stringCache, args.Key)
+	ls.stringCacheMutex.Unlock()
+
+	ls.listCacheMutex.Lock()
+	delete(ls.listCache, args.Key)
+	ls.listCacheMutex.Unlock()
+
+	reply.Status = storagerpc.OK
+
+	return nil
 }
 
 func (ls *libstore) GetWantLease(key string) bool {
@@ -259,5 +267,6 @@ func (ls *libstore) UpdateQueryCount(key string) {
 		ls.queryCountMutex.Lock()
 		count, _ = ls.queryCount[key]
 		ls.queryCount[key] = count - 1
+		ls.queryCountMutex.Unlock()
 	}()
 }
