@@ -25,8 +25,8 @@ type libstore struct {
 	myAddress string
 	leaseMode LeaseMode
 
-	ssClient  *rpc.Client
 	ssServers []storagerpc.Node
+	ssClients map[string]*rpc.Client
 
 	stringCache      map[string]StringEntry
 	stringCacheMutex sync.Mutex
@@ -70,27 +70,35 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	if err != nil {
 		return nil, err
 	}
-	ls.ssClient = ssClient
-
-	for {
-		args := &storagerpc.GetServersArgs{}
-		var reply storagerpc.GetServersReply
-		err = ls.ssClient.Call("StorageServer.GetServers", args, &reply)
-		if err != nil {
-			return nil, err
-		}
-		if reply.Status == storagerpc.OK {
-			ls.ssServers = reply.Servers
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 
 	ls.myAddress = myHostPort
 	ls.leaseMode = mode
 	ls.stringCache = make(map[string]StringEntry)
 	ls.listCache = make(map[string]ListEntry)
 	ls.queryCount = make(map[string]int)
+	ls.ssClients = make(map[string]*rpc.Client)
+
+	for {
+		args := &storagerpc.GetServersArgs{}
+		var reply storagerpc.GetServersReply
+		err = ssClient.Call("StorageServer.GetServers", args, &reply)
+		if err != nil {
+			return nil, err
+		}
+		if reply.Status == storagerpc.OK {
+			ls.ssServers = reply.Servers
+			for _, server := range ls.ssServers {
+				var client *rpc.Client
+				client, err = rpc.DialHTTP("tcp", server.HostPort)
+				if err != nil {
+					return nil, err
+				}
+				ls.ssClients[server.HostPort] = client
+			}
+			break
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
 
 	return ls, nil
 }
@@ -108,10 +116,11 @@ func (ls *libstore) Get(key string) (string, error) {
 	}
 	ls.stringCacheMutex.Unlock()
 
+	ssClient := ls.GetSSClient(key)
 	wantLease := ls.GetWantLease(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetReply
-	err := ls.ssClient.Call("StorageServer.Get", args, &reply)
+	err := ssClient.Call("StorageServer.Get", args, &reply)
 
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("Get Reply Status Error: %v", reply.Status))
@@ -136,20 +145,23 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
+	ssClient := ls.GetSSClient(key)
 	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
-	err := ls.ssClient.Call("StorageServer.Put", args, &reply)
+	err := ssClient.Call("StorageServer.Put", args, &reply)
 
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("Put Reply Status Error: %v", reply.Status))
 	}
+
 	return err
 }
 
 func (ls *libstore) Delete(key string) error {
+	ssClient := ls.GetSSClient(key)
 	args := &storagerpc.DeleteArgs{Key: key}
 	var reply storagerpc.DeleteReply
-	err := ls.ssClient.Call("StorageServer.Delete", args, &reply)
+	err := ssClient.Call("StorageServer.Delete", args, &reply)
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("Delete Reply Status Error: %v", reply.Status))
 	}
@@ -169,10 +181,11 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	}
 	ls.listCacheMutex.Unlock()
 
+	ssClient := ls.GetSSClient(key)
 	wantLease := ls.GetWantLease(key)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myAddress}
 	var reply storagerpc.GetListReply
-	err := ls.ssClient.Call("StorageServer.GetList", args, &reply)
+	err := ssClient.Call("StorageServer.GetList", args, &reply)
 
 	if reply.Status != storagerpc.OK {
 		return reply.Value, errors.New(fmt.Sprintf("GetList Reply Status Error: %v", reply.Status))
@@ -197,9 +210,10 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
+	ssClient := ls.GetSSClient(key)
 	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
-	err := ls.ssClient.Call("StorageServer.RemoveFromList", args, &reply)
+	err := ssClient.Call("StorageServer.RemoveFromList", args, &reply)
 
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("RemoveFromList Reply Status Error: %v", reply.Status))
@@ -208,9 +222,10 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
+	ssClient := ls.GetSSClient(key)
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
-	err := ls.ssClient.Call("StorageServer.AppendToList", args, &reply)
+	err := ssClient.Call("StorageServer.AppendToList", args, &reply)
 
 	if reply.Status != storagerpc.OK {
 		return errors.New(fmt.Sprintf("AppendToList Reply Status Error: %v", reply.Status))
@@ -230,6 +245,11 @@ func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storage
 	reply.Status = storagerpc.OK
 
 	return nil
+}
+
+func (ls *libstore) GetSSClient(key string) *rpc.Client {
+	server := GetServerForKey(ls.ssServers, key)
+	return ls.ssClients[server.HostPort]
 }
 
 func (ls *libstore) GetWantLease(key string) bool {
